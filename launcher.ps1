@@ -3,26 +3,29 @@ $BasePath = "$env:USERPROFILE\.oi_deepseek_launcher"
 $VenvPath = "$BasePath\venv"
 $ApiBase = "https://ollama.ebartnet.pl/v1"
 
-# Ustalanie ścieżki do pliku .env (szuka w tym samym folderze co skrypt)
-$EnvPath = "$PSScriptRoot\.env"
+# --- LOGIKA KLUCZA (ZMODYFIKOWANA DLA IWR/RAM) ---
 $ApiKey = $null
 
-# Logika wczytywania klucza z pliku .env
-if (Test-Path $EnvPath) {
-    foreach ($line in Get-Content $EnvPath) {
-        # Szuka linii wyglądającej jak: OPENAI_API_KEY=twoj_klucz
+# 1. Sprawdź, czy klucz jest już w zmiennej środowiskowej (np. podany w terminalu)
+if (-not [string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)) {
+    $ApiKey = $env:OPENAI_API_KEY
+    Write-Host "Wykryto klucz API w sesji terminala." -ForegroundColor Gray
+}
+# 2. Jeśli nie, poszukaj pliku .env w folderze instalacyjnym (nie w folderze skryptu!)
+elseif (Test-Path "$BasePath\.env") {
+    foreach ($line in Get-Content "$BasePath\.env") {
         if ($line -match "^OPENAI_API_KEY=(.*)$") {
             $ApiKey = $matches[1].Trim()
         }
     }
+    Write-Host "Wczytano klucz z pliku lokalnego ($BasePath\.env)." -ForegroundColor Gray
 }
 
-# Sprawdzenie bezpieczeństwa - jeśli klucza nie ma, zatrzymaj skrypt
+# Sprawdzenie bezpieczeństwa
 if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-    Write-Host "BŁĄD KRYTYCZNY: Nie znaleziono klucza API!" -ForegroundColor Red
-    Write-Host "1. Upewnij się, że plik .env istnieje w: $PSScriptRoot" -ForegroundColor Gray
-    Write-Host "2. Upewnij się, że w pliku jest linia: OPENAI_API_KEY=sk-twoj-klucz" -ForegroundColor Gray
-    Start-Sleep -Seconds 10
+    Write-Host "BŁĄD: Nie znaleziono klucza API!" -ForegroundColor Red
+    Write-Host "Opcja A: Przed uruchomieniem wpisz: `$env:OPENAI_API_KEY='sk-twoj-klucz'" -ForegroundColor Yellow
+    Write-Host "Opcja B: Stwórz plik .env w folderze: $BasePath" -ForegroundColor Yellow
     exit
 }
 
