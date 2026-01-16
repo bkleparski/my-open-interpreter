@@ -6,6 +6,7 @@ $BasePath = "$env:USERPROFILE\.oi_gpt_codex"
 $LocalPythonDir = "$BasePath\python_bin"
 $LocalPythonExe = "$LocalPythonDir\python.exe"
 $LauncherFile = "$BasePath\oi.ps1"
+$PyStartFile = "$BasePath\start_oi.py" # Nasz ratunkowy plik startowy
 
 # --- 1. HIGIENA DANYCH ---
 if (Test-Path "$BasePath\.env") { Remove-Item "$BasePath\.env" -Force -ErrorAction SilentlyContinue }
@@ -60,6 +61,7 @@ Write-Host "`n--- Inicjowanie środowiska (Metoda Portable ZIP) ---" -Foreground
 function Ensure-LocalPythonZIP {
     if (Test-Path $LocalPythonExe) { return $LocalPythonExe }
 
+    # Pełne czyszczenie przed instalacją
     if (Test-Path $LocalPythonDir) { Remove-Item $LocalPythonDir -Recurse -Force -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory -Force -Path $LocalPythonDir | Out-Null
 
@@ -73,6 +75,7 @@ function Ensure-LocalPythonZIP {
         Expand-Archive -Path $ZipPath -DestinationPath $LocalPythonDir -Force
         Remove-Item $ZipPath -ErrorAction SilentlyContinue
 
+        # Fix dla import site
         $PthFile = "$LocalPythonDir\python311._pth"
         if (Test-Path $PthFile) {
             $Content = Get-Content $PthFile
@@ -97,28 +100,45 @@ function Ensure-LocalPythonZIP {
 $PyCmd = Ensure-LocalPythonZIP
 
 # --- 5. INSTALACJA OPEN INTERPRETER ---
-$InterpreterExe = "$LocalPythonDir\Scripts\interpreter.exe"
+Write-Host "Weryfikacja bibliotek..." -ForegroundColor Yellow
+# Instalujemy bez wywoływania skryptów, same biblioteki
+& "$PyCmd" -m pip install --upgrade pip setuptools wheel --no-warn-script-location --quiet
+& "$PyCmd" -m pip install open-interpreter --no-warn-script-location --quiet
 
-if (-not (Test-Path $InterpreterExe)) {
-    Write-Host "Instalacja pakietów..." -ForegroundColor Yellow
-    & "$PyCmd" -m pip install --upgrade pip setuptools wheel --no-warn-script-location --quiet
-    & "$PyCmd" -m pip install open-interpreter --no-warn-script-location --quiet
-}
+# --- 6. TWORZENIE PLIKU STARTOWEGO PYTHON (FIX DLA NO MODULE) ---
+# Zamiast polegać na interpreter.exe, tworzymy własny skrypt uruchomieniowy
+$PythonLaunchCode = @"
+import sys
+import os
+# Wymuszenie kodowania UTF-8 dla konsoli Windows
+sys.stdout.reconfigure(encoding='utf-8')
+
+try:
+    # Próbujemy zaimportować i uruchomić główny interfejs
+    from interpreter.terminal_interface.start_terminal_interface import main
+    main()
+except ImportError:
+    # Fallback dla innych wersji
+    import interpreter
+    interpreter.chat()
+except Exception as e:
+    print(f'CRITICAL ERROR: {e}')
+    input('Press Enter to exit...')
+"@
+
+Set-Content -Path $PyStartFile -Value $PythonLaunchCode
 
 Write-Host "--- START: $CurrentModel ---" -ForegroundColor Green
 
 try {
-    # FIX: Uruchamiamy bezpośrednio plik EXE z folderu Scripts
-    if (Test-Path $InterpreterExe) {
-        & "$InterpreterExe" `
-            --model $CurrentModel `
-            --context_window 128000 `
-            --max_tokens 8192 `
-            -y `
-            --system_message "Jesteś ekspertem IT. Wykonujesz polecenia w systemie Windows. Odpowiadaj zwięźle i po polsku."
-    } else {
-        throw "Nie znaleziono pliku startowego: $InterpreterExe"
-    }
+    # Uruchamiamy nasz plik .py bezpośrednio przez python.exe
+    # Przekazujemy argumenty do naszego skryptu, który przekaże je do biblioteki
+    & "$PyCmd" "$PyStartFile" `
+        --model $CurrentModel `
+        --context_window 128000 `
+        --max_tokens 8192 `
+        -y `
+        --system_message "Jesteś ekspertem IT. Wykonujesz polecenia w systemie Windows. Odpowiadaj zwięźle i po polsku."
 } catch {
     Write-Error "Błąd uruchomienia: $_"
 } finally {
