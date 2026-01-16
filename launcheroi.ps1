@@ -5,7 +5,6 @@ $ErrorActionPreference = "Stop"
 $BasePath = "$env:USERPROFILE\.oi_gpt_codex"
 $LocalPythonDir = "$BasePath\python_bin"
 $LocalPythonExe = "$LocalPythonDir\python.exe"
-# W wersji Portable (ZIP) nie robimy venv - sam folder jest naszym venv'em
 $LauncherFile = "$BasePath\oi.ps1"
 
 # --- 1. HIGIENA DANYCH ---
@@ -36,11 +35,19 @@ if ($ProvSel -eq "2") {
     if ([string]::IsNullOrWhiteSpace($CurrentModel)) { $CurrentModel = "gpt-4o" }
 }
 
-Write-Host "Wklej klucz API:" -ForegroundColor Yellow
-$InputKey = Read-Host "Klucz"
+# --- ZMIANA: MASKOWANIE KLUCZA ---
+Write-Host "Wklej klucz API (Będzie widoczny jako *****):" -ForegroundColor Yellow
+try {
+    $SecureKey = Read-Host "Klucz" -AsSecureString
+    # Konwersja bezpiecznego ciągu z powrotem na tekst dla zmiennej środowiskowej
+    $InputKey = [System.Net.NetworkCredential]::new("", $SecureKey).Password
+} catch {
+    $InputKey = ""
+}
+
 if ([string]::IsNullOrWhiteSpace($InputKey)) { Write-Error "Brak klucza."; exit }
 
-$env:OPENAI_API_KEY = $InputKey.Trim()
+$env:OPENAI_API_KEY = $InputKey
 if ($CurrentBase) { $env:OPENAI_API_BASE = $CurrentBase } else { Remove-Item Env:\OPENAI_API_BASE -ErrorAction SilentlyContinue }
 
 # --- 3. ZAPIS STARTERA ---
@@ -55,7 +62,7 @@ Write-Host "`n--- Inicjowanie środowiska (Metoda Portable ZIP) ---" -Foreground
 function Ensure-LocalPythonZIP {
     if (Test-Path $LocalPythonExe) { return $LocalPythonExe }
 
-    # Sprzątanie po nieudanych próbach
+    # Sprzątanie
     if (Test-Path $LocalPythonDir) { Remove-Item $LocalPythonDir -Recurse -Force -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory -Force -Path $LocalPythonDir | Out-Null
 
@@ -70,9 +77,7 @@ function Ensure-LocalPythonZIP {
         Expand-Archive -Path $ZipPath -DestinationPath $LocalPythonDir -Force
         Remove-Item $ZipPath -ErrorAction SilentlyContinue
 
-        # --- KRYTYCZNE POPRAWKI DLA WERSJI EMBEDDED ---
-        
-        # 1. Odblokowanie 'import site' żeby pip działał (Standard w wersji embed jest zablokowany)
+        # Poprawki dla wersji Embedded
         $PthFile = "$LocalPythonDir\python311._pth"
         if (Test-Path $PthFile) {
             $Content = Get-Content $PthFile
@@ -80,7 +85,7 @@ function Ensure-LocalPythonZIP {
             Set-Content -Path $PthFile -Value $Content
         }
 
-        # 2. Instalacja PIP (bo wersja ZIP go nie ma)
+        # Instalacja PIP
         Write-Host "Instalacja menadżera PIP..." -ForegroundColor Yellow
         $GetPipUrl = "https://bootstrap.pypa.io/get-pip.py"
         $GetPipPath = "$LocalPythonDir\get-pip.py"
@@ -99,11 +104,8 @@ function Ensure-LocalPythonZIP {
 $PyCmd = Ensure-LocalPythonZIP
 
 # --- 5. INSTALACJA OPEN INTERPRETER ---
-# W wersji ZIP instalujemy pakiety bezpośrednio do folderu interpretera (brak venv, bo folder jest izolowany)
 if (-not (Test-Path "$LocalPythonDir\Scripts\interpreter.exe")) {
     Write-Host "Instalacja Open Interpreter..." -ForegroundColor Yellow
-    
-    # Używamy modułu pip bezpośrednio
     & "$PyCmd" -m pip install --upgrade pip setuptools wheel --no-warn-script-location --quiet
     & "$PyCmd" -m pip install open-interpreter --no-warn-script-location --quiet
 }
@@ -111,7 +113,7 @@ if (-not (Test-Path "$LocalPythonDir\Scripts\interpreter.exe")) {
 Write-Host "--- START: $CurrentModel ---" -ForegroundColor Green
 
 try {
-    # Open Interpreter w wersji ZIP uruchamiamy jako moduł, bo ścieżki do .exe mogą nie być w PATH
+    # Uruchomienie jako moduł
     & "$PyCmd" -m interpreter `
         --model $CurrentModel `
         --context_window 128000 `
@@ -121,8 +123,10 @@ try {
 } catch {
     Write-Error "Błąd uruchomienia."
 } finally {
+    # Czyszczenie pamięci
     $env:OPENAI_API_KEY = $null
     $env:OPENAI_API_BASE = $null
     $InputKey = $null
+    $SecureKey = $null
     Write-Host "`n[SECURE] Wyczyszczono klucze z pamięci." -ForegroundColor DarkGray
 }
