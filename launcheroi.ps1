@@ -35,11 +35,9 @@ if ($ProvSel -eq "2") {
     if ([string]::IsNullOrWhiteSpace($CurrentModel)) { $CurrentModel = "gpt-4o" }
 }
 
-# --- ZMIANA: MASKOWANIE KLUCZA ---
 Write-Host "Wklej klucz API (Będzie widoczny jako *****):" -ForegroundColor Yellow
 try {
     $SecureKey = Read-Host "Klucz" -AsSecureString
-    # Konwersja bezpiecznego ciągu z powrotem na tekst dla zmiennej środowiskowej
     $InputKey = [System.Net.NetworkCredential]::new("", $SecureKey).Password
 } catch {
     $InputKey = ""
@@ -58,11 +56,10 @@ if (-not (Test-Path $LauncherFile) -and $CurrentScriptBlock) {
 
 Write-Host "`n--- Inicjowanie środowiska (Metoda Portable ZIP) ---" -ForegroundColor Cyan
 
-# --- 4. INSTALACJA PYTHON (METODA ZIP - NIEZAWODNA) ---
+# --- 4. INSTALACJA PYTHON (METODA ZIP) ---
 function Ensure-LocalPythonZIP {
     if (Test-Path $LocalPythonExe) { return $LocalPythonExe }
 
-    # Sprzątanie
     if (Test-Path $LocalPythonDir) { Remove-Item $LocalPythonDir -Recurse -Force -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory -Force -Path $LocalPythonDir | Out-Null
 
@@ -72,12 +69,10 @@ function Ensure-LocalPythonZIP {
     
     try {
         Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath
-        
         Write-Host "Rozpakowywanie..." -ForegroundColor Yellow
         Expand-Archive -Path $ZipPath -DestinationPath $LocalPythonDir -Force
         Remove-Item $ZipPath -ErrorAction SilentlyContinue
 
-        # Poprawki dla wersji Embedded
         $PthFile = "$LocalPythonDir\python311._pth"
         if (Test-Path $PthFile) {
             $Content = Get-Content $PthFile
@@ -85,18 +80,16 @@ function Ensure-LocalPythonZIP {
             Set-Content -Path $PthFile -Value $Content
         }
 
-        # Instalacja PIP
-        Write-Host "Instalacja menadżera PIP..." -ForegroundColor Yellow
+        Write-Host "Instalacja PIP..." -ForegroundColor Yellow
         $GetPipUrl = "https://bootstrap.pypa.io/get-pip.py"
         $GetPipPath = "$LocalPythonDir\get-pip.py"
         Invoke-WebRequest -Uri $GetPipUrl -OutFile $GetPipPath
         
         & "$LocalPythonExe" "$GetPipPath" --no-warn-script-location | Out-Null
         Remove-Item $GetPipPath -ErrorAction SilentlyContinue
-
         return $LocalPythonExe
     } catch {
-        Write-Error "Błąd instalacji metodą ZIP: $_"
+        Write-Error "Błąd instalacji: $_"
         exit
     }
 }
@@ -104,8 +97,10 @@ function Ensure-LocalPythonZIP {
 $PyCmd = Ensure-LocalPythonZIP
 
 # --- 5. INSTALACJA OPEN INTERPRETER ---
-if (-not (Test-Path "$LocalPythonDir\Scripts\interpreter.exe")) {
-    Write-Host "Instalacja Open Interpreter..." -ForegroundColor Yellow
+$InterpreterExe = "$LocalPythonDir\Scripts\interpreter.exe"
+
+if (-not (Test-Path $InterpreterExe)) {
+    Write-Host "Instalacja pakietów..." -ForegroundColor Yellow
     & "$PyCmd" -m pip install --upgrade pip setuptools wheel --no-warn-script-location --quiet
     & "$PyCmd" -m pip install open-interpreter --no-warn-script-location --quiet
 }
@@ -113,20 +108,22 @@ if (-not (Test-Path "$LocalPythonDir\Scripts\interpreter.exe")) {
 Write-Host "--- START: $CurrentModel ---" -ForegroundColor Green
 
 try {
-    # Uruchomienie jako moduł
-    & "$PyCmd" -m interpreter `
-        --model $CurrentModel `
-        --context_window 128000 `
-        --max_tokens 8192 `
-        -y `
-        --system_message "Jesteś ekspertem IT. Wykonujesz polecenia w systemie Windows. Odpowiadaj zwięźle i po polsku."
+    # FIX: Uruchamiamy bezpośrednio plik EXE z folderu Scripts
+    if (Test-Path $InterpreterExe) {
+        & "$InterpreterExe" `
+            --model $CurrentModel `
+            --context_window 128000 `
+            --max_tokens 8192 `
+            -y `
+            --system_message "Jesteś ekspertem IT. Wykonujesz polecenia w systemie Windows. Odpowiadaj zwięźle i po polsku."
+    } else {
+        throw "Nie znaleziono pliku startowego: $InterpreterExe"
+    }
 } catch {
-    Write-Error "Błąd uruchomienia."
+    Write-Error "Błąd uruchomienia: $_"
 } finally {
-    # Czyszczenie pamięci
     $env:OPENAI_API_KEY = $null
     $env:OPENAI_API_BASE = $null
     $InputKey = $null
-    $SecureKey = $null
     Write-Host "`n[SECURE] Wyczyszczono klucze z pamięci." -ForegroundColor DarkGray
 }
