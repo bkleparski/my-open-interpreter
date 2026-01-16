@@ -8,23 +8,19 @@ $LocalPythonExe = "$LocalPythonDir\python.exe"
 $VenvPath = "$BasePath\venv"
 $LauncherFile = "$BasePath\oi.ps1"
 
-# --- 1. HIGIENA DANYCH (CZYŚCIMY ŚLADY) ---
-# Jeśli istnieje stary plik z kluczem, usuwamy go dla bezpieczeństwa
+# --- 1. HIGIENA DANYCH ---
 if (Test-Path "$BasePath\.env") {
-    Write-Host "Wykryto stary plik konfiguracyjny. Usuwanie dla bezpieczeństwa..." -ForegroundColor DarkGray
+    Write-Host "Usuwanie starej konfiguracji..." -ForegroundColor DarkGray
     Remove-Item "$BasePath\.env" -Force
 }
-
-# Inicjalizacja folderu (tylko dla bibliotek)
 if (-not (Test-Path $BasePath)) { New-Item -ItemType Directory -Force -Path $BasePath | Out-Null }
 
 # --- 2. TRYB "RAM ONLY" - KONFIGURACJA SESJI ---
 Clear-Host
 Write-Host "--- OPEN INTERPRETER (TRYB INCOGNITO) ---" -ForegroundColor Cyan
-Write-Host "Klucz i ustawienia zostaną usunięte z pamięci natychmiast po zakończeniu pracy." -ForegroundColor Gray
+Write-Host "Klucz usuwany z pamięci po zamknięciu." -ForegroundColor Gray
 Write-Host "------------------------------------------------" -ForegroundColor DarkGray
 
-# Wybór dostawcy (Szybkie menu)
 Write-Host "Wybierz dostawcę:" -ForegroundColor Cyan
 Write-Host "[1] OpenAI" -ForegroundColor White
 Write-Host "[2] OpenRouter" -ForegroundColor White
@@ -43,20 +39,15 @@ if ($ProvSel -eq "2") {
     if ([string]::IsNullOrWhiteSpace($CurrentModel)) { $CurrentModel = "gpt-4o" }
 }
 
-# Pobranie klucza do RAM
-Write-Host "Wklej klucz API (nie zostanie zapisany):" -ForegroundColor Yellow
+Write-Host "Wklej klucz API:" -ForegroundColor Yellow
 $InputKey = Read-Host "Klucz (sk-...)"
 
-if ([string]::IsNullOrWhiteSpace($InputKey)) {
-    Write-Error "Bez klucza nie ruszę. Zamykanie."
-    exit
-}
+if ([string]::IsNullOrWhiteSpace($InputKey)) { Write-Error "Brak klucza."; exit }
 
-# Ustawienie zmiennych środowiskowych TYLKO dla tego procesu
 $env:OPENAI_API_KEY = $InputKey.Trim()
 if ($CurrentBase) { $env:OPENAI_API_BASE = $CurrentBase } else { Remove-Item Env:\OPENAI_API_BASE -ErrorAction SilentlyContinue }
 
-# --- 3. ZAPISANIE STARTERA (Dla wygody uruchamiania, ale BEZ KLUCZA) ---
+# --- 3. ZAPISANIE STARTERA ---
 $CurrentScriptBlock = $MyInvocation.MyCommand.ScriptBlock
 if (-not (Test-Path $LauncherFile) -and $CurrentScriptBlock) {
     try { Set-Content -Path $LauncherFile -Value $CurrentScriptBlock.ToString() } catch {}
@@ -64,9 +55,13 @@ if (-not (Test-Path $LauncherFile) -and $CurrentScriptBlock) {
 
 Write-Host "`n--- Inicjowanie środowiska (Izolacja x64) ---" -ForegroundColor Cyan
 
-# --- 4. SILNIK PYTHON x64 ---
+# --- 4. SILNIK PYTHON x64 (POPRAWIONA FUNKCJA) ---
 function Ensure-LocalPythonX64 {
+    # Jeśli plik istnieje i działa - zwracamy go
     if (Test-Path $LocalPythonExe) { return $LocalPythonExe }
+
+    # Upewnij się, że katalog docelowy istnieje PRZED instalacją
+    if (-not (Test-Path $LocalPythonDir)) { New-Item -ItemType Directory -Force -Path $LocalPythonDir | Out-Null }
 
     Write-Host "Pobieranie Pythona 3.11 (x64)..." -ForegroundColor Yellow
     $InstallerUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
@@ -75,12 +70,32 @@ function Ensure-LocalPythonX64 {
     try {
         Invoke-WebRequest -Uri $InstallerUrl -OutFile $InstallerPath
         Write-Host "Instalacja silnika Python..." -ForegroundColor Yellow
-        $args = "/quiet InstallAllUsers=0 TargetDir=`"$LocalPythonDir`" PrependPath=0 Include_test=0 Shortcuts=0"
-        Start-Process -FilePath $InstallerPath -ArgumentList $args -Wait
+        
+        # FIX: Argumenty jako tablica - bezpieczniejsze dla ścieżek
+        $InstArgs = @(
+            "/quiet", 
+            "InstallAllUsers=0", 
+            "TargetDir=$LocalPythonDir", 
+            "PrependPath=0", 
+            "Include_test=0", 
+            "Shortcuts=0"
+        )
+        
+        $proc = Start-Process -FilePath $InstallerPath -ArgumentList $InstArgs -Wait -PassThru
+        
+        # Sprzątanie instalatora
         Remove-Item $InstallerPath -ErrorAction SilentlyContinue
+
+        # WERYFIKACJA CZY PLIK FAKTYCZNIE POWSTAŁ
+        if (-not (Test-Path $LocalPythonExe)) {
+            Write-Error "Instalator zakończył pracę, ale plik python.exe nie pojawił się w: $LocalPythonDir"
+            Write-Host "Możliwa przyczyna: Antywirus zablokował wypakowanie lub brak uprawnień." -ForegroundColor Red
+            exit
+        }
+        
         return $LocalPythonExe
     } catch {
-        Write-Error "Błąd instalacji Pythona."
+        Write-Error "Błąd krytyczny podczas instalacji Pythona: $_"
         exit
     }
 }
@@ -90,7 +105,15 @@ $PyCmd = Ensure-LocalPythonX64
 # --- 5. START VENV ---
 if (-not (Test-Path "$VenvPath\Scripts\interpreter.exe")) {
     Write-Host "Tworzenie wirtualnego środowiska..." -ForegroundColor Yellow
-    & $PyCmd -m venv $VenvPath
+    
+    # Używamy pełnej ścieżki w cudzysłowie, żeby uniknąć błędów
+    & "$PyCmd" -m venv $VenvPath
+    
+    if (-not (Test-Path "$VenvPath\Scripts\python.exe")) {
+        Write-Error "Nie udało się utworzyć venv. Sprawdź uprawnienia do folderu."
+        exit
+    }
+
     Write-Host "Instalacja Open Interpreter..." -ForegroundColor Yellow
     & "$VenvPath\Scripts\python" -m pip install --upgrade pip setuptools wheel --quiet
     & "$VenvPath\Scripts\pip" install open-interpreter --quiet
@@ -99,7 +122,6 @@ if (-not (Test-Path "$VenvPath\Scripts\interpreter.exe")) {
 Write-Host "--- START: $CurrentModel ---" -ForegroundColor Green
 
 try {
-    # Uruchomienie
     & "$VenvPath\Scripts\interpreter" `
         --model $CurrentModel `
         --context_window 128000 `
@@ -109,8 +131,6 @@ try {
 } catch {
     Write-Error "Błąd uruchomienia."
 } finally {
-    # --- BEZPIECZNIK ---
-    # Po zakończeniu programu (lub błędzie) zerujemy klucz w pamięci
     $env:OPENAI_API_KEY = $null
     $env:OPENAI_API_BASE = $null
     $InputKey = $null
