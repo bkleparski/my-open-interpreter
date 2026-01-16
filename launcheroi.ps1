@@ -9,9 +9,8 @@ $VenvPath = "$BasePath\venv"
 $PyStartFile = "$BasePath\start_oi.py"
 
 # --- 1. START (CZYSTY STÓŁ) ---
-# Upewniamy się, że nie ma pozostałości po poprzednich sesjach
 if (Test-Path $BasePath) { 
-    Write-Host "Czyszczenie pozostałości po poprzedniej sesji..." -ForegroundColor DarkGray
+    Write-Host "Czyszczenie pozostałości..." -ForegroundColor DarkGray
     Remove-Item $BasePath -Recurse -Force -ErrorAction SilentlyContinue 
 }
 New-Item -ItemType Directory -Force -Path $BasePath | Out-Null
@@ -19,7 +18,7 @@ New-Item -ItemType Directory -Force -Path $BasePath | Out-Null
 # --- 2. MENU KONFIGURACJI ---
 Clear-Host
 Write-Host "--- OPEN INTERPRETER (SESSION MODE) ---" -ForegroundColor Cyan
-Write-Host "Wszystkie pliki zostaną usunięte po zakończeniu pracy." -ForegroundColor Gray
+Write-Host "Wszystkie pliki zostaną usunięte po zakończeniu." -ForegroundColor Gray
 Write-Host "------------------------------------------------" -ForegroundColor DarkGray
 
 Write-Host "Wybierz dostawcę:" -ForegroundColor Cyan
@@ -28,7 +27,6 @@ Write-Host "[2] OpenRouter" -ForegroundColor White
 
 $ProvSel = Read-Host "Wybór"
 
-# Konfiguracja zmiennych
 $env:OI_USE_OPENROUTER = "false"
 
 if ($ProvSel -eq "2") {
@@ -54,14 +52,13 @@ try {
 }
 
 if ([string]::IsNullOrWhiteSpace($InputKey)) { Write-Error "Brak klucza."; exit }
-
 $env:OI_API_KEY = $InputKey
 
 # --- 3. BLOK GŁÓWNY (TRY...FINALLY) ---
 try {
     Write-Host "`n--- INSTALACJA ŚRODOWISKA TYMCZASOWEGO ---" -ForegroundColor Cyan
     
-    # A. INSTALACJA PYTHONA (PEŁNY EXE - ROZWIĄZUJE PROBLEM SSL/CLOUDFLARE)
+    # A. INSTALACJA PYTHONA (PEŁNY EXE - FIX DLA SSL/CLOUDFLARE)
     Write-Host "Pobieranie Python 3.11 (Full Installer)..." -ForegroundColor Yellow
     $InstUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
     $InstPath = "$BasePath\python_setup.exe"
@@ -83,28 +80,24 @@ try {
     & "$LocalPythonExe" -m venv $VenvPath
     
     # C. INSTALACJA PAKIETÓW
-    Write-Host "Instalacja Open Interpreter i certyfikatów..." -ForegroundColor Yellow
+    Write-Host "Instalacja bibliotek i certyfikatów..." -ForegroundColor Yellow
     $Pip = "$VenvPath\Scripts\pip.exe"
-    # Instalujemy certifi, aby mieć pewność co do SSL
     & $Pip install --upgrade pip setuptools wheel certifi --quiet
     & $Pip install open-interpreter --quiet
 
-    # D. GENEROWANIE SKRYPTU STARTOWEGO (NAPRAWIA OPENROUTER)
-    $PythonCode = @"
-import sys
-import os
-import certifi
-
-# SSL FIX
-os.environ['SSL_CERT_FILE'] = certifi.where()
-os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-
-sys.stdout.reconfigure(encoding='utf-8')
-
-def start():
-    try:
-        from interpreter import interpreter
-        
-        # Konfiguracja z ENV
-        use_openrouter = os.environ.get("OI_USE_OPENROUTER", "false") == "true"
-        model = os.environ
+    # D. GENEROWANIE SKRYPTU STARTOWEGO (Metoda bezpieczna składniowo)
+    # Używamy tablicy stringów zamiast Here-String, aby uniknąć błędów parsera
+    $PyCodeLines = @(
+        "import sys",
+        "import os",
+        "import certifi",
+        "",
+        "# SSL FIX",
+        "os.environ['SSL_CERT_FILE'] = certifi.where()",
+        "os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()",
+        "sys.stdout.reconfigure(encoding='utf-8')",
+        "",
+        "def start():",
+        "    try:",
+        "        from interpreter import interpreter",
+        "        use_openrouter = os.environ.get('OI_USE_OPENROUTER',
