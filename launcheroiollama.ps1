@@ -1,113 +1,122 @@
-# --- KONFIGURACJA I BEZPIECZEŃSTWO ---
-$BasePath = "$env:USERPROFILE\.oi_launcher_simple"
+# --- KONFIGURACJA ---
+$BasePath = "$env:USERPROFILE\.oi_launcher_clean"
 $VenvPath = "$BasePath\venv"
-
-# Ustawienie modelu (możesz tu wpisać gpt-4o, gpt-3.5-turbo itp.)
-$ModelName = "gpt-4o" 
-
-# --- 1. NAJPIERW TWORZYMY KATALOG (Żeby było gdzie zapisać klucz) ---
-if (-not (Test-Path $BasePath)) { 
-    New-Item -ItemType Directory -Force -Path $BasePath | Out-Null 
+# Ważne: usuwamy stary folder z poprzednich eksperymentów, który powoduje błędy
+if (Test-Path "$env:USERPROFILE\.oi_gpt_codex") { 
+    Remove-Item "$env:USERPROFILE\.oi_gpt_codex" -Recurse -Force -ErrorAction SilentlyContinue 
 }
 
-# --- 2. LOGIKA KLUCZA (ZMODYFIKOWANA - PYTA O KLUCZ) ---
+# --- 1. START (CZYSTY STÓŁ) ---
+if (Test-Path $BasePath) { 
+    Remove-Item $BasePath -Recurse -Force -ErrorAction SilentlyContinue 
+}
+New-Item -ItemType Directory -Force -Path $BasePath | Out-Null
+
+# --- 2. KLUCZ API (PYTANIE) ---
+Write-Host "--- OPEN INTERPRETER (CLEAN SESSION) ---" -ForegroundColor Cyan
 $ApiKey = $null
 
-# A. Sprawdź, czy klucz jest już w zmiennej środowiskowej
 if (-not [string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)) {
     $ApiKey = $env:OPENAI_API_KEY
-    Write-Host "Wykryto klucz API w sesji terminala." -ForegroundColor Gray
-}
-# B. Jeśli nie, poszukaj pliku .env w folderze instalacyjnym
-elseif (Test-Path "$BasePath\.env") {
-    foreach ($line in Get-Content "$BasePath\.env") {
-        if ($line -match "^OPENAI_API_KEY=(.*)$") {
-            $ApiKey = $matches[1].Trim()
-        }
-    }
-    if (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
-        Write-Host "Wczytano klucz z pliku lokalnego." -ForegroundColor Gray
-    }
-}
-
-# C. Jeśli nadal brak klucza - ZAPYTAJ UŻYTKOWNIKA
-if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-    Write-Host "`n--- KONFIGURACJA ---" -ForegroundColor Yellow
-    Write-Host "Nie wykryto klucza API." -ForegroundColor Gray
-    
-    $InputKey = Read-Host "Wklej swój klucz OpenAI API (sk-...)"
-    
-    if ([string]::IsNullOrWhiteSpace($InputKey)) {
-        Write-Error "Nie podano klucza. Skrypt zakończy działanie."
-        exit
-    }
-    
+} else {
+    Write-Host "Nie wykryto klucza w systemie." -ForegroundColor Yellow
+    $InputKey = Read-Host "Wklej klucz OpenAI API (sk-...)"
+    if ([string]::IsNullOrWhiteSpace($InputKey)) { Write-Error "Brak klucza."; exit }
     $ApiKey = $InputKey.Trim()
-    
-    # Zapisz klucz do pliku, żeby nie pytać następnym razem
-    Set-Content -Path "$BasePath\.env" -Value "OPENAI_API_KEY=$ApiKey"
-    Write-Host "Klucz został zapisany w folderze $BasePath" -ForegroundColor Green
 }
 
-Write-Host "--- Inicjowanie Loadera Open Interpreter ---" -ForegroundColor Cyan
+$env:OPENAI_API_KEY = $ApiKey
+# Czyścimy ew. stare ustawienia OpenRoutera/Ollamy
+if (Test-Path Env:\OPENAI_API_BASE) { Remove-Item Env:\OPENAI_API_BASE }
 
-# --- FUNKCJA: Znajdź lub Zainstaluj Python 3.11 ---
-function Get-Python311 {
-    Write-Host "Szukanie Pythona 3.11 (wymagany dla stabilności)..." -ForegroundColor Gray
-    
-    # 1. Sprawdź czy "py" launcher ma dostęp do 3.11
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        $test = py -3.11 --version 2>&1
-        if ($LASTEXITCODE -eq 0) { return "py -3.11" }
+# --- 3. BLOK GŁÓWNY (TRY...FINALLY) ---
+try {
+    Write-Host "`n--- PRZYGOTOWANIE ŚRODOWISKA ---" -ForegroundColor Cyan
+
+    # A. SZUKANIE / INSTALACJA PYTHONA (Oficjalny = Stabilny)
+    function Get-Python311 {
+        # Sprawdzamy czy mamy Pythona 3.11 w wersji x64 (Ważne dla ARM!)
+        $Check = { param($c) try { & $c -c "import platform; print(platform.machine())" 2>$null } catch {} }
+        
+        # 1. Sprawdź 'py' launcher
+        if (Get-Command py -ErrorAction SilentlyContinue) {
+            $arch = & $Check -c "py -3.11"
+            if ($arch -match "AMD64|x86_64") { return "py -3.11" }
+        }
+
+        # 2. Sprawdź typowe ścieżki
+        $paths = @(
+            "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+            "C:\Program Files\Python311\python.exe"
+        )
+        foreach ($p in $paths) {
+            if (Test-Path $p) {
+                $arch = & $Check -c $p
+                if ($arch -match "AMD64|x86_64") { return $p }
+            }
+        }
+
+        return $null
     }
 
-    # 2. Sprawdź standardową ścieżkę instalacji Winget/Local
-    $stdPath = "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe"
-    if (Test-Path $stdPath) { return $stdPath }
+    $PyCmd = Get-Python311
 
-    # 3. Jeśli nie znaleziono - Instaluj
-    Write-Host "Nie znaleziono Python 3.11. Instalacja wersji kompatybilnej..." -ForegroundColor Yellow
-    winget install -e --id Python.Python.3.11 --architecture x64 --scope user --accept-source-agreements --accept-package-agreements --disable-interactivity
-    
-    # Ponowne sprawdzenie po instalacji
-    if (Test-Path $stdPath) { return $stdPath }
-    
-    # Ostatnia deska ratunku - sprawdź czy dodano do PATH
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","User") + ";" + [System.Environment]::GetEnvironmentVariable("Path","Machine")
-    if (python --version | Select-String "3.11") { return "python" }
+    if (-not $PyCmd) {
+        Write-Host "Nie znaleziono Pythona 3.11 (x64). Instalacja przez Winget..." -ForegroundColor Yellow
+        # Instalujemy wersję x64, która zadziała wszędzie (nawet na Parallels/ARM przez emulację)
+        winget install -e --id Python.Python.3.11 --architecture x64 --scope user --accept-source-agreements --accept-package-agreements --disable-interactivity
+        
+        $PyCmd = Get-Python311
+        if (-not $PyCmd) { throw "Nie udało się zainstalować Pythona 3.11." }
+    }
 
-    return $null
-}
+    Write-Host "Używanie interpretera: $PyCmd" -ForegroundColor Green
 
-# 1. Pobierz właściwy plik wykonywalny
-$PyCmd = Get-Python311
-
-if (-not $PyCmd) {
-    Write-Error "Nie udało się znaleźć ani zainstalować Pythona 3.11. Odinstaluj ręcznie Pythona 3.13 i spróbuj ponownie."
-    exit
-}
-
-Write-Host "Używanie interpretera: $PyCmd" -ForegroundColor Green
-
-# 3. Tworzenie VENV (Używając konkretnie 3.11!)
-if (-not (Test-Path "$VenvPath\Scripts\interpreter.exe")) {
+    # B. TWORZENIE VENV
     Write-Host "Tworzenie środowiska wirtualnego..." -ForegroundColor Yellow
     
-    # Wywołanie komendy tworzenia venv
     if ($PyCmd -eq "py -3.11") {
         py -3.11 -m venv $VenvPath
     } else {
         & $PyCmd -m venv $VenvPath
     }
-    
+
     if (-not (Test-Path "$VenvPath\Scripts\pip.exe")) {
-        Write-Error "BŁĄD: Nie udało się utworzyć venv."
-        exit
+        throw "Błąd: Nie udało się utworzyć venv. Upewnij się, że Python jest poprawnie zainstalowany."
     }
 
+    # C. INSTALACJA PAKIETÓW
     Write-Host "Instalacja Open Interpreter..." -ForegroundColor Yellow
     & "$VenvPath\Scripts\python" -m pip install --upgrade pip setuptools wheel --quiet
     & "$VenvPath\Scripts\pip" install open-interpreter --quiet
-}
 
-# 4.
+    # D. URUCHOMIENIE
+    Write-Host "--- START GPT-4o ---" -ForegroundColor Green
+    Write-Host "Wpisz 'exit' aby zakończyć i usunąć pliki." -ForegroundColor Gray
+    
+    & "$VenvPath\Scripts\interpreter" `
+        --model gpt-4o `
+        --context_window 128000 `
+        --max_tokens 4096 `
+        -y `
+        --system_message "Jesteś asystentem. Wykonujesz polecenia w systemie Windows. ZAWSZE odpowiadaj w języku polskim."
+
+} catch {
+    Write-Error "Wystąpił błąd krytyczny: $_"
+} finally {
+    # --- AUTO-DESTRUKCJA ---
+    Write-Host "`n--- CZYSZCZENIE PO ZAKOŃCZENIU ---" -ForegroundColor Cyan
+    $env:OPENAI_API_KEY = $null
+    
+    Write-Host "Czekam na zamknięcie procesów..." -ForegroundColor Gray
+    Start-Sleep -Seconds 2
+    
+    try {
+        if (Test-Path $BasePath) {
+            Remove-Item $BasePath -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "Pliki tymczasowe zostały usunięte." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "Nie można usunąć folderu (coś go blokuje). Usuń ręcznie: $BasePath" -ForegroundColor Yellow
+    }
+}
