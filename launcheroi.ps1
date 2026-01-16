@@ -6,7 +6,7 @@ $BasePath = "$env:USERPROFILE\.oi_gpt_codex"
 $LocalPythonDir = "$BasePath\python_bin"
 $LocalPythonExe = "$LocalPythonDir\python.exe"
 $LauncherFile = "$BasePath\oi.ps1"
-$PyStartFile = "$BasePath\start_oi.py" # Nasz ratunkowy plik startowy
+$PyStartFile = "$BasePath\start_oi.py"
 
 # --- 1. HIGIENA DANYCH ---
 if (Test-Path "$BasePath\.env") { Remove-Item "$BasePath\.env" -Force -ErrorAction SilentlyContinue }
@@ -27,13 +27,23 @@ $ProvSel = Read-Host "Wybór"
 if ($ProvSel -eq "2") {
     $CurrentBase = "https://openrouter.ai/api/v1"
     Write-Host "Podaj model (np. 'anthropic/claude-sonnet-4.5'):" -ForegroundColor Yellow
-    $CurrentModel = Read-Host "Model"
-    if ([string]::IsNullOrWhiteSpace($CurrentModel)) { $CurrentModel = "anthropic/claude-sonnet-4.5" }
+    $RawModel = Read-Host "Model"
+    if ([string]::IsNullOrWhiteSpace($RawModel)) { $RawModel = "anthropic/claude-sonnet-4.5" }
+    
+    # --- CRITICAL FIX DLA OPENROUTER ---
+    # Jeśli model to np. "anthropic/...", LiteLLM próbuje łączyć się z Anthropic bezpośrednio.
+    # Musimy wymusić protokół OpenAI, dodając przedrostek "openai/", żeby użył naszego API BASE.
+    if ($RawModel -notmatch "^openai/") {
+        $CurrentModel = "openai/$RawModel"
+    } else {
+        $CurrentModel = $RawModel
+    }
 } else {
     $CurrentBase = $null
     Write-Host "Podaj model (np. 'gpt-4o'):" -ForegroundColor Yellow
-    $CurrentModel = Read-Host "Model"
-    if ([string]::IsNullOrWhiteSpace($CurrentModel)) { $CurrentModel = "gpt-4o" }
+    $RawModel = Read-Host "Model"
+    if ([string]::IsNullOrWhiteSpace($RawModel)) { $RawModel = "gpt-4o" }
+    $CurrentModel = $RawModel
 }
 
 Write-Host "Wklej klucz API (Będzie widoczny jako *****):" -ForegroundColor Yellow
@@ -61,7 +71,6 @@ Write-Host "`n--- Inicjowanie środowiska (Metoda Portable ZIP) ---" -Foreground
 function Ensure-LocalPythonZIP {
     if (Test-Path $LocalPythonExe) { return $LocalPythonExe }
 
-    # Pełne czyszczenie przed instalacją
     if (Test-Path $LocalPythonDir) { Remove-Item $LocalPythonDir -Recurse -Force -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory -Force -Path $LocalPythonDir | Out-Null
 
@@ -75,7 +84,6 @@ function Ensure-LocalPythonZIP {
         Expand-Archive -Path $ZipPath -DestinationPath $LocalPythonDir -Force
         Remove-Item $ZipPath -ErrorAction SilentlyContinue
 
-        # Fix dla import site
         $PthFile = "$LocalPythonDir\python311._pth"
         if (Test-Path $PthFile) {
             $Content = Get-Content $PthFile
@@ -101,38 +109,39 @@ $PyCmd = Ensure-LocalPythonZIP
 
 # --- 5. INSTALACJA OPEN INTERPRETER ---
 Write-Host "Weryfikacja bibliotek..." -ForegroundColor Yellow
-# Instalujemy bez wywoływania skryptów, same biblioteki
 & "$PyCmd" -m pip install --upgrade pip setuptools wheel --no-warn-script-location --quiet
 & "$PyCmd" -m pip install open-interpreter --no-warn-script-location --quiet
 
-# --- 6. TWORZENIE PLIKU STARTOWEGO PYTHON (FIX DLA NO MODULE) ---
-# Zamiast polegać na interpreter.exe, tworzymy własny skrypt uruchomieniowy
+# --- 6. TWORZENIE PLIKU STARTOWEGO (DIRECT PYTHON) ---
 $PythonLaunchCode = @"
 import sys
 import os
-# Wymuszenie kodowania UTF-8 dla konsoli Windows
+
+# Fix dla kodowania w konsoli Windows
 sys.stdout.reconfigure(encoding='utf-8')
 
-try:
-    # Próbujemy zaimportować i uruchomić główny interfejs
-    from interpreter.terminal_interface.start_terminal_interface import main
-    main()
-except ImportError:
-    # Fallback dla innych wersji
-    import interpreter
-    interpreter.chat()
-except Exception as e:
-    print(f'CRITICAL ERROR: {e}')
-    input('Press Enter to exit...')
+def start():
+    print(f"Uruchamianie loadera dla modelu...")
+    try:
+        from interpreter.terminal_interface.start_terminal_interface import main
+        main()
+    except Exception as e:
+        print(f"\nCRITICAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        input('\nWcisnij ENTER aby zamknac...')
+
+if __name__ == "__main__":
+    start()
 "@
 
 Set-Content -Path $PyStartFile -Value $PythonLaunchCode
 
-Write-Host "--- START: $CurrentModel ---" -ForegroundColor Green
+Write-Host "--- START: $RawModel (Protocol: OpenAI) ---" -ForegroundColor Green
 
 try {
-    # Uruchamiamy nasz plik .py bezpośrednio przez python.exe
-    # Przekazujemy argumenty do naszego skryptu, który przekaże je do biblioteki
+    # Uruchamiamy python.exe przekazując mu nasz skrypt startowy i parametry
+    # Parametr --model ma teraz doklejone "openai/", co naprawia blad OpenRoutera
     & "$PyCmd" "$PyStartFile" `
         --model $CurrentModel `
         --context_window 128000 `
