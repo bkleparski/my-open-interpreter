@@ -24,28 +24,32 @@ Write-Host "[2] OpenRouter" -ForegroundColor White
 
 $ProvSel = Read-Host "Wybór"
 
-# Zmienne sterujące
-$UseOpenRouter = $false
+# Zmienne konfiguracyjne
+$EnvApiBase = $null
+$TargetModel = ""
 
 if ($ProvSel -eq "2") {
-    $UseOpenRouter = $true
-    Write-Host "Podaj model (slug z OpenRouter, np. 'anthropic/claude-3.5-sonnet'):" -ForegroundColor Yellow
-    $RawModel = Read-Host "Model"
-    if ([string]::IsNullOrWhiteSpace($RawModel)) { $RawModel = "anthropic/claude-3.5-sonnet" }
+    # --- KONFIGURACJA OPENROUTER (Metoda Universal) ---
+    # Podajemy adres OpenRoutera, ale udajemy, że to OpenAI.
+    # To eliminuje błędy 400 związane z błędnym formatowaniem nazwy modelu.
+    $EnvApiBase = "https://openrouter.ai/api/v1"
     
-    # --- FIX: NATIVE OPENROUTER SUPPORT ---
-    # Używamy natywnego przedrostka 'openrouter/', który LiteLLM rozumie bezbłędnie.
-    # Nie ustawiamy API_BASE ręcznie, LiteLLM zrobi to sam.
-    if ($RawModel -match "^openrouter/") {
-        $CurrentModel = $RawModel
-    } else {
-        $CurrentModel = "openrouter/$RawModel"
+    Write-Host "Podaj model (dokładny slug z OpenRouter):" -ForegroundColor Yellow
+    Write-Host "Przykłady: 'anthropic/claude-3.5-sonnet', 'google/gemini-pro-1.5'" -ForegroundColor DarkGray
+    $TargetModel = Read-Host "Model"
+    
+    if ([string]::IsNullOrWhiteSpace($TargetModel)) { 
+        # Domyślny bezpieczny model
+        $TargetModel = "anthropic/claude-3.5-sonnet" 
     }
 } else {
+    # --- KONFIGURACJA OPENAI ---
+    # Brak API_BASE (domyślny endpoint OpenAI)
+    $EnvApiBase = $null
+    
     Write-Host "Podaj model (np. 'gpt-4o'):" -ForegroundColor Yellow
-    $RawModel = Read-Host "Model"
-    if ([string]::IsNullOrWhiteSpace($RawModel)) { $RawModel = "gpt-4o" }
-    $CurrentModel = $RawModel
+    $TargetModel = Read-Host "Model"
+    if ([string]::IsNullOrWhiteSpace($TargetModel)) { $TargetModel = "gpt-4o" }
 }
 
 Write-Host "Wklej klucz API (Będzie widoczny jako *****):" -ForegroundColor Yellow
@@ -58,19 +62,16 @@ try {
 
 if ([string]::IsNullOrWhiteSpace($InputKey)) { Write-Error "Brak klucza."; exit }
 
-# --- KONFIGURACJA ZMIENNYCH ŚRODOWISKOWYCH ---
-# Czyścimy stare śmieci
-if (Test-Path Env:\OPENAI_API_BASE) { Remove-Item Env:\OPENAI_API_BASE -ErrorAction SilentlyContinue }
-if (Test-Path Env:\OPENROUTER_API_KEY) { Remove-Item Env:\OPENROUTER_API_KEY -ErrorAction SilentlyContinue }
+# --- KONFIGURACJA ZMIENNYCH ŚRODOWISKOWYCH (KLUCZOWE) ---
+# Czyścimy stare zmienne, żeby nic nie kolidowało
+Remove-Item Env:\OPENAI_API_BASE -ErrorAction SilentlyContinue
+Remove-Item Env:\OPENAI_API_KEY -ErrorAction SilentlyContinue
+Remove-Item Env:\OPENROUTER_API_KEY -ErrorAction SilentlyContinue
 
-if ($UseOpenRouter) {
-    # Dla OpenRouter ustawiamy klucz w dwóch miejscach dla pewności
-    $env:OPENROUTER_API_KEY = $InputKey
-    $env:OPENAI_API_KEY = $InputKey
-    # WAŻNE: Nie ustawiamy OPENAI_API_BASE, bo przedrostek "openrouter/" w modelu sam to załatwia
-} else {
-    # Standardowe OpenAI
-    $env:OPENAI_API_KEY = $InputKey
+# Ustawiamy konfigurację "na sztywno"
+$env:OPENAI_API_KEY = $InputKey
+if ($EnvApiBase) {
+    $env:OPENAI_API_BASE = $EnvApiBase
 }
 
 # --- 3. ZAPIS STARTERA ---
@@ -85,7 +86,6 @@ Write-Host "`n--- Inicjowanie środowiska (Metoda Portable ZIP) ---" -Foreground
 function Ensure-LocalPythonZIP {
     if (Test-Path $LocalPythonExe) { return $LocalPythonExe }
     
-    # Reset folderu jeśli brak exe
     if (Test-Path $LocalPythonDir) { Remove-Item $LocalPythonDir -Recurse -Force -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory -Force -Path $LocalPythonDir | Out-Null
 
@@ -138,8 +138,9 @@ sys.stdout.reconfigure(encoding='utf-8')
 def start():
     print(f"Uruchamianie loadera...")
     try:
+        # Importujemy bibliotekę
         from interpreter.terminal_interface.start_terminal_interface import main
-        # Argumenty są przekazywane automatycznie przez sys.argv
+        # Uruchamiamy
         main()
     except Exception as e:
         print(f"\nCRITICAL ERROR: {e}")
@@ -153,12 +154,14 @@ if __name__ == "__main__":
 
 Set-Content -Path $PyStartFile -Value $PythonLaunchCode
 
-Write-Host "--- START: $CurrentModel ---" -ForegroundColor Green
+Write-Host "--- START: $TargetModel ---" -ForegroundColor Green
+if ($EnvApiBase) { Write-Host "Endpoint: $EnvApiBase" -ForegroundColor Gray }
 
 try {
-    # Uruchomienie
+    # Przekazujemy CZYSTĄ nazwę modelu. 
+    # Ponieważ ustawiliśmy OPENAI_API_BASE, interpreter wyśle to do OpenRoutera.
     & "$PyCmd" "$PyStartFile" `
-        --model $CurrentModel `
+        --model $TargetModel `
         --context_window 128000 `
         --max_tokens 8192 `
         -y `
@@ -167,7 +170,6 @@ try {
     Write-Error "Błąd uruchomienia: $_"
 } finally {
     $env:OPENAI_API_KEY = $null
-    $env:OPENROUTER_API_KEY = $null
     $env:OPENAI_API_BASE = $null
     $InputKey = $null
     Write-Host "`n[SECURE] Wyczyszczono klucze z pamięci." -ForegroundColor DarkGray
