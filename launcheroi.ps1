@@ -3,26 +3,27 @@
 $ErrorActionPreference = "Stop"
 
 $BasePath = "$env:USERPROFILE\.oi_gpt_codex"
+$LocalPythonDir = "$BasePath\python_bin"
+$LocalPythonExe = "$LocalPythonDir\python.exe"
 $VenvPath = "$BasePath\venv"
 $LauncherFile = "$BasePath\oi.ps1"
-$ModelName = "gpt-5.2-codex" # Zmień na gpt-4o w razie potrzeby
+$ModelName = "gpt-5.2-codex"
 
-# --- 0. DIAGNOSTYKA I CZYSZCZENIE (Fix dla ARM) ---
-# Jeśli venv istnieje, sprawdzamy czy działa. Jeśli nie (bo był ARM) - usuwamy.
+# --- 0. DIAGNOSTYKA I CZYSZCZENIE ---
+# Sprawdzamy, czy w venv jest właściwa architektura. Jeśli nie - usuwamy.
 if (Test-Path "$VenvPath\Scripts\python.exe") {
     try {
-        & "$VenvPath\Scripts\python" -c "import fastuuid" 2>$null
-        if ($LASTEXITCODE -ne 0) { throw "Broken" }
+        # Test: Czy Python w venv uważa się za AMD64?
+        $arch = & "$VenvPath\Scripts\python" -c "import platform; print(platform.machine())" 2>$null
+        if ($arch -notmatch "AMD64|x86_64") { throw "Wrong Architecture" }
     } catch {
-        Write-Host "Wykryto uszkodzone środowisko (poprzednia zła architektura). Usuwanie..." -ForegroundColor Yellow
+        Write-Host "Wykryto złą architekturę w starym venv. Usuwanie..." -ForegroundColor Yellow
         Remove-Item -Path $VenvPath -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
 # --- 1. INICJALIZACJA KATALOGU ---
-if (-not (Test-Path $BasePath)) { 
-    New-Item -ItemType Directory -Force -Path $BasePath | Out-Null 
-}
+if (-not (Test-Path $BasePath)) { New-Item -ItemType Directory -Force -Path $BasePath | Out-Null }
 
 # --- 2. LOGIKA KLUCZA ---
 $ApiKey = $null
@@ -47,90 +48,71 @@ if (-not (Test-Path $LauncherFile) -and $CurrentScriptBlock) {
     try { Set-Content -Path $LauncherFile -Value $CurrentScriptBlock.ToString() } catch {}
 }
 
-Write-Host "--- Inicjowanie Loadera Open Interpreter (x64 Force) ---" -ForegroundColor Cyan
+Write-Host "--- Inicjowanie Loadera Open Interpreter (Izolacja x64) ---" -ForegroundColor Cyan
 
-# --- FUNKCJA: Znajdź lub Zainstaluj Python 3.11 (x64) ---
-function Get-Python311-X64 {
-    # Funkcja sprawdzająca architekturę pliku wykonywalnego
-    $CheckArch = { param($cmd) 
+# --- FUNKCJA: INSTALACJA PRYWATNEGO PYTHONA X64 ---
+function Ensure-LocalPythonX64 {
+    # Sprawdź czy nasz lokalny python istnieje i czy jest x64
+    if (Test-Path $LocalPythonExe) {
         try {
-            $arch = & $cmd -c "import platform; print(platform.machine())" 2>$null
-            if ($arch -match "AMD64|x86_64") { return $true } # Tylko x64 jest OK
-        } catch { return $false }
-        return $false
+            $arch = & $LocalPythonExe -c "import platform; print(platform.machine())" 2>$null
+            if ($arch -match "AMD64|x86_64") { 
+                return $LocalPythonExe 
+            }
+        } catch {}
+        Write-Host "Lokalny Python uszkodzony. Pobieranie ponownie..." -ForegroundColor Yellow
+        Remove-Item $LocalPythonDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # 1. Sprawdź istniejące instalacje
-    $paths = @(
-        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
-        "C:\Program Files\Python311\python.exe",
-        "C:\Python311\python.exe"
-    )
+    Write-Host "Pobieranie dedykowanego Pythona 3.11 (x64) dla emulacji..." -ForegroundColor Yellow
     
-    # Sprawdź 'py' launcher
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        if ((py -3.11-64 --version 2>&1) -match "3.11") { return "py -3.11-64" }
-    }
-
-    foreach ($p in $paths) {
-        if (Test-Path $p) { if (& $CheckArch -cmd $p) { return $p } }
-    }
-
-    # 2. INSTALACJA (Jeśli nie znaleziono)
-    Write-Host "Nie znaleziono Pythona 3.11 (x64). Rozpoczynam instalację..." -ForegroundColor Yellow
-    
-    # Metoda A: Winget (Preferowana)
-    try {
-        Write-Host "Próba instalacji przez Winget..." -ForegroundColor Gray
-        winget install -e --id Python.Python.3.11 --architecture x64 --scope user --accept-source-agreements --accept-package-agreements --disable-interactivity
-    } catch {
-        Write-Host "Winget nie zadziałał." -ForegroundColor DarkGray
-    }
-
-    # Sprawdzenie po Winget
-    foreach ($p in $paths) { if (Test-Path $p) { return $p } }
-
-    # Metoda B: Bezpośrednie pobieranie (Fallback dla VM bez Winget)
-    Write-Host "Pobieranie instalatora Python 3.11 z python.org..." -ForegroundColor Yellow
+    $InstallerUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
     $InstallerPath = "$BasePath\python_installer.exe"
+    
     try {
-        Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" -OutFile $InstallerPath
-        Write-Host "Instalowanie Pythona..." -ForegroundColor Yellow
-        # Cicha instalacja do standardowego folderu użytkownika
-        Start-Process -FilePath $InstallerPath -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0" -Wait
+        Invoke-WebRequest -Uri $InstallerUrl -OutFile $InstallerPath
+        
+        Write-Host "Instalowanie Pythona w folderze lokalnym..." -ForegroundColor Yellow
+        # Instalacja cicha, do folderu skryptu, bez admina, bez modyfikacji PATH
+        $args = "/quiet InstallAllUsers=0 TargetDir=`"$LocalPythonDir`" PrependPath=0 Include_test=0 Include_doc=0 Include_tcltk=0 Shortcuts=0"
+        
+        $process = Start-Process -FilePath $InstallerPath -ArgumentList $args -Wait -PassThru
+        
+        if ($process.ExitCode -ne 0) { throw "Błąd instalatora: $($process.ExitCode)" }
+        
         Remove-Item $InstallerPath -ErrorAction SilentlyContinue
+        
+        if (Test-Path $LocalPythonExe) {
+            Write-Host "Zainstalowano pomyślnie." -ForegroundColor Green
+            return $LocalPythonExe
+        } else {
+            throw "Plik python.exe nie pojawił się po instalacji."
+        }
     } catch {
-        Write-Error "Nie udało się pobrać lub zainstalować Pythona."
+        Write-Error "Nie udało się pobrać/zainstalować lokalnego Pythona: $_"
         exit
     }
-
-    # Ostateczne sprawdzenie
-    foreach ($p in $paths) { if (Test-Path $p) { return $p } }
-    
-    # Sprawdzenie PATH
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        if (& $CheckArch -cmd "python") { return "python" }
-    }
-
-    return $null
 }
 
-$PyCmd = Get-Python311-X64
-
-if (-not $PyCmd) {
-    Write-Error "KRYTYCZNY BŁĄD: Nie udało się zapewnić środowiska Python 3.11 x64."
-    exit
-}
-
-Write-Host "Używanie interpretera: $PyCmd" -ForegroundColor Green
+# Pobierz/Znajdź izolowanego Pythona
+$PyCmd = Ensure-LocalPythonX64
+Write-Host "Używanie izolowanego interpretera: $PyCmd" -ForegroundColor Green
 
 # --- KONFIGURACJA VENV ---
 if (-not (Test-Path "$VenvPath\Scripts\interpreter.exe")) {
-    Write-Host "Tworzenie venv..." -ForegroundColor Yellow
-    if ($PyCmd -eq "py -3.11-64") { py -3.11-64 -m venv $VenvPath } else { & $PyCmd -m venv $VenvPath }
+    Write-Host "Tworzenie venv (wymuszona architektura x64)..." -ForegroundColor Yellow
     
-    Write-Host "Instalacja pakietów..." -ForegroundColor Yellow
+    & $PyCmd -m venv $VenvPath
+    
+    if (-not (Test-Path "$VenvPath\Scripts\python.exe")) {
+        Write-Error "Nie udało się utworzyć venv."
+        exit
+    }
+
+    Write-Host "Instalacja pakietów (teraz pobierze wersje binarne)..." -ForegroundColor Yellow
+    # Aktualizacja pip wewnątrz venv
     & "$VenvPath\Scripts\python" -m pip install --upgrade pip setuptools wheel --quiet
+    # Instalacja Open Interpreter
     & "$VenvPath\Scripts\pip" install open-interpreter --quiet
 }
 
