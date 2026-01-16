@@ -5,20 +5,17 @@ $ErrorActionPreference = "Stop"
 $BasePath = "$env:USERPROFILE\.oi_gpt_codex"
 $LocalPythonDir = "$BasePath\python_bin"
 $LocalPythonExe = "$LocalPythonDir\python.exe"
-$VenvPath = "$BasePath\venv"
+# W wersji Portable (ZIP) nie robimy venv - sam folder jest naszym venv'em
 $LauncherFile = "$BasePath\oi.ps1"
 
 # --- 1. HIGIENA DANYCH ---
-if (Test-Path "$BasePath\.env") {
-    Write-Host "Usuwanie starej konfiguracji..." -ForegroundColor DarkGray
-    Remove-Item "$BasePath\.env" -Force
-}
+if (Test-Path "$BasePath\.env") { Remove-Item "$BasePath\.env" -Force -ErrorAction SilentlyContinue }
 if (-not (Test-Path $BasePath)) { New-Item -ItemType Directory -Force -Path $BasePath | Out-Null }
 
-# --- 2. TRYB "RAM ONLY" - KONFIGURACJA SESJI ---
+# --- 2. TRYB "RAM ONLY" (INCOGNITO) ---
 Clear-Host
-Write-Host "--- OPEN INTERPRETER (TRYB INCOGNITO) ---" -ForegroundColor Cyan
-Write-Host "Klucz usuwany z pamięci po zamknięciu." -ForegroundColor Gray
+Write-Host "--- OPEN INTERPRETER (2026 EDITION) ---" -ForegroundColor Cyan
+Write-Host "Tryb incognito: Klucze tylko w RAM." -ForegroundColor Gray
 Write-Host "------------------------------------------------" -ForegroundColor DarkGray
 
 Write-Host "Wybierz dostawcę:" -ForegroundColor Cyan
@@ -29,9 +26,9 @@ $ProvSel = Read-Host "Wybór"
 
 if ($ProvSel -eq "2") {
     $CurrentBase = "https://openrouter.ai/api/v1"
-    Write-Host "Podaj model (np. 'anthropic/claude-3.5-sonnet'):" -ForegroundColor Yellow
+    Write-Host "Podaj model (np. 'anthropic/claude-sonnet-4.5'):" -ForegroundColor Yellow
     $CurrentModel = Read-Host "Model"
-    if ([string]::IsNullOrWhiteSpace($CurrentModel)) { $CurrentModel = "anthropic/claude-3.5-sonnet" }
+    if ([string]::IsNullOrWhiteSpace($CurrentModel)) { $CurrentModel = "anthropic/claude-sonnet-4.5" }
 } else {
     $CurrentBase = $null
     Write-Host "Podaj model (np. 'gpt-4o'):" -ForegroundColor Yellow
@@ -40,89 +37,82 @@ if ($ProvSel -eq "2") {
 }
 
 Write-Host "Wklej klucz API:" -ForegroundColor Yellow
-$InputKey = Read-Host "Klucz (sk-...)"
-
+$InputKey = Read-Host "Klucz"
 if ([string]::IsNullOrWhiteSpace($InputKey)) { Write-Error "Brak klucza."; exit }
 
 $env:OPENAI_API_KEY = $InputKey.Trim()
 if ($CurrentBase) { $env:OPENAI_API_BASE = $CurrentBase } else { Remove-Item Env:\OPENAI_API_BASE -ErrorAction SilentlyContinue }
 
-# --- 3. ZAPISANIE STARTERA ---
+# --- 3. ZAPIS STARTERA ---
 $CurrentScriptBlock = $MyInvocation.MyCommand.ScriptBlock
 if (-not (Test-Path $LauncherFile) -and $CurrentScriptBlock) {
     try { Set-Content -Path $LauncherFile -Value $CurrentScriptBlock.ToString() } catch {}
 }
 
-Write-Host "`n--- Inicjowanie środowiska (Izolacja x64) ---" -ForegroundColor Cyan
+Write-Host "`n--- Inicjowanie środowiska (Metoda Portable ZIP) ---" -ForegroundColor Cyan
 
-# --- 4. SILNIK PYTHON x64 (POPRAWIONA FUNKCJA) ---
-function Ensure-LocalPythonX64 {
-    # Jeśli plik istnieje i działa - zwracamy go
+# --- 4. INSTALACJA PYTHON (METODA ZIP - NIEZAWODNA) ---
+function Ensure-LocalPythonZIP {
     if (Test-Path $LocalPythonExe) { return $LocalPythonExe }
 
-    # Upewnij się, że katalog docelowy istnieje PRZED instalacją
-    if (-not (Test-Path $LocalPythonDir)) { New-Item -ItemType Directory -Force -Path $LocalPythonDir | Out-Null }
+    # Sprzątanie po nieudanych próbach
+    if (Test-Path $LocalPythonDir) { Remove-Item $LocalPythonDir -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Force -Path $LocalPythonDir | Out-Null
 
-    Write-Host "Pobieranie Pythona 3.11 (x64)..." -ForegroundColor Yellow
-    $InstallerUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
-    $InstallerPath = "$BasePath\python_installer.exe"
+    Write-Host "Pobieranie Python 3.11 (Embedded ZIP x64)..." -ForegroundColor Yellow
+    $ZipUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+    $ZipPath = "$BasePath\python.zip"
     
     try {
-        Invoke-WebRequest -Uri $InstallerUrl -OutFile $InstallerPath
-        Write-Host "Instalacja silnika Python..." -ForegroundColor Yellow
+        Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath
         
-        # FIX: Argumenty jako tablica - bezpieczniejsze dla ścieżek
-        $InstArgs = @(
-            "/quiet", 
-            "InstallAllUsers=0", 
-            "TargetDir=$LocalPythonDir", 
-            "PrependPath=0", 
-            "Include_test=0", 
-            "Shortcuts=0"
-        )
-        
-        $proc = Start-Process -FilePath $InstallerPath -ArgumentList $InstArgs -Wait -PassThru
-        
-        # Sprzątanie instalatora
-        Remove-Item $InstallerPath -ErrorAction SilentlyContinue
+        Write-Host "Rozpakowywanie..." -ForegroundColor Yellow
+        Expand-Archive -Path $ZipPath -DestinationPath $LocalPythonDir -Force
+        Remove-Item $ZipPath -ErrorAction SilentlyContinue
 
-        # WERYFIKACJA CZY PLIK FAKTYCZNIE POWSTAŁ
-        if (-not (Test-Path $LocalPythonExe)) {
-            Write-Error "Instalator zakończył pracę, ale plik python.exe nie pojawił się w: $LocalPythonDir"
-            Write-Host "Możliwa przyczyna: Antywirus zablokował wypakowanie lub brak uprawnień." -ForegroundColor Red
-            exit
-        }
+        # --- KRYTYCZNE POPRAWKI DLA WERSJI EMBEDDED ---
         
+        # 1. Odblokowanie 'import site' żeby pip działał (Standard w wersji embed jest zablokowany)
+        $PthFile = "$LocalPythonDir\python311._pth"
+        if (Test-Path $PthFile) {
+            $Content = Get-Content $PthFile
+            $Content = $Content -replace "#import site", "import site"
+            Set-Content -Path $PthFile -Value $Content
+        }
+
+        # 2. Instalacja PIP (bo wersja ZIP go nie ma)
+        Write-Host "Instalacja menadżera PIP..." -ForegroundColor Yellow
+        $GetPipUrl = "https://bootstrap.pypa.io/get-pip.py"
+        $GetPipPath = "$LocalPythonDir\get-pip.py"
+        Invoke-WebRequest -Uri $GetPipUrl -OutFile $GetPipPath
+        
+        & "$LocalPythonExe" "$GetPipPath" --no-warn-script-location | Out-Null
+        Remove-Item $GetPipPath -ErrorAction SilentlyContinue
+
         return $LocalPythonExe
     } catch {
-        Write-Error "Błąd krytyczny podczas instalacji Pythona: $_"
+        Write-Error "Błąd instalacji metodą ZIP: $_"
         exit
     }
 }
 
-$PyCmd = Ensure-LocalPythonX64
+$PyCmd = Ensure-LocalPythonZIP
 
-# --- 5. START VENV ---
-if (-not (Test-Path "$VenvPath\Scripts\interpreter.exe")) {
-    Write-Host "Tworzenie wirtualnego środowiska..." -ForegroundColor Yellow
-    
-    # Używamy pełnej ścieżki w cudzysłowie, żeby uniknąć błędów
-    & "$PyCmd" -m venv $VenvPath
-    
-    if (-not (Test-Path "$VenvPath\Scripts\python.exe")) {
-        Write-Error "Nie udało się utworzyć venv. Sprawdź uprawnienia do folderu."
-        exit
-    }
-
+# --- 5. INSTALACJA OPEN INTERPRETER ---
+# W wersji ZIP instalujemy pakiety bezpośrednio do folderu interpretera (brak venv, bo folder jest izolowany)
+if (-not (Test-Path "$LocalPythonDir\Scripts\interpreter.exe")) {
     Write-Host "Instalacja Open Interpreter..." -ForegroundColor Yellow
-    & "$VenvPath\Scripts\python" -m pip install --upgrade pip setuptools wheel --quiet
-    & "$VenvPath\Scripts\pip" install open-interpreter --quiet
+    
+    # Używamy modułu pip bezpośrednio
+    & "$PyCmd" -m pip install --upgrade pip setuptools wheel --no-warn-script-location --quiet
+    & "$PyCmd" -m pip install open-interpreter --no-warn-script-location --quiet
 }
 
 Write-Host "--- START: $CurrentModel ---" -ForegroundColor Green
 
 try {
-    & "$VenvPath\Scripts\interpreter" `
+    # Open Interpreter w wersji ZIP uruchamiamy jako moduł, bo ścieżki do .exe mogą nie być w PATH
+    & "$PyCmd" -m interpreter `
         --model $CurrentModel `
         --context_window 128000 `
         --max_tokens 8192 `
