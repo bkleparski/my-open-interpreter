@@ -24,32 +24,24 @@ Write-Host "[2] OpenRouter" -ForegroundColor White
 
 $ProvSel = Read-Host "Wybór"
 
-# Zmienne konfiguracyjne
-$EnvApiBase = $null
-$TargetModel = ""
+# Zmienne przekazywane do Pythona przez ENV
+$env:OI_USE_OPENROUTER = "false"
+$env:OI_REAL_MODEL = ""
 
 if ($ProvSel -eq "2") {
-    # --- KONFIGURACJA OPENROUTER (Metoda Universal) ---
-    # Podajemy adres OpenRoutera, ale udajemy, że to OpenAI.
-    # To eliminuje błędy 400 związane z błędnym formatowaniem nazwy modelu.
-    $EnvApiBase = "https://openrouter.ai/api/v1"
-    
-    Write-Host "Podaj model (dokładny slug z OpenRouter):" -ForegroundColor Yellow
-    Write-Host "Przykłady: 'anthropic/claude-3.5-sonnet', 'google/gemini-pro-1.5'" -ForegroundColor DarkGray
-    $TargetModel = Read-Host "Model"
-    
-    if ([string]::IsNullOrWhiteSpace($TargetModel)) { 
-        # Domyślny bezpieczny model
-        $TargetModel = "anthropic/claude-3.5-sonnet" 
-    }
+    # OPENROUTER
+    $env:OI_USE_OPENROUTER = "true"
+    Write-Host "Podaj model (slug z OpenRouter):" -ForegroundColor Yellow
+    Write-Host "Np: 'anthropic/claude-3.5-sonnet' (Zalecany)" -ForegroundColor DarkGray
+    $RawModel = Read-Host "Model"
+    if ([string]::IsNullOrWhiteSpace($RawModel)) { $RawModel = "anthropic/claude-3.5-sonnet" }
+    $env:OI_REAL_MODEL = $RawModel
 } else {
-    # --- KONFIGURACJA OPENAI ---
-    # Brak API_BASE (domyślny endpoint OpenAI)
-    $EnvApiBase = $null
-    
+    # OPENAI
     Write-Host "Podaj model (np. 'gpt-4o'):" -ForegroundColor Yellow
-    $TargetModel = Read-Host "Model"
-    if ([string]::IsNullOrWhiteSpace($TargetModel)) { $TargetModel = "gpt-4o" }
+    $RawModel = Read-Host "Model"
+    if ([string]::IsNullOrWhiteSpace($RawModel)) { $RawModel = "gpt-4o" }
+    $env:OI_REAL_MODEL = $RawModel
 }
 
 Write-Host "Wklej klucz API (Będzie widoczny jako *****):" -ForegroundColor Yellow
@@ -62,17 +54,10 @@ try {
 
 if ([string]::IsNullOrWhiteSpace($InputKey)) { Write-Error "Brak klucza."; exit }
 
-# --- KONFIGURACJA ZMIENNYCH ŚRODOWISKOWYCH (KLUCZOWE) ---
-# Czyścimy stare zmienne, żeby nic nie kolidowało
-Remove-Item Env:\OPENAI_API_BASE -ErrorAction SilentlyContinue
-Remove-Item Env:\OPENAI_API_KEY -ErrorAction SilentlyContinue
-Remove-Item Env:\OPENROUTER_API_KEY -ErrorAction SilentlyContinue
-
-# Ustawiamy konfigurację "na sztywno"
+# Ustawiamy klucz w zmiennej środowiskowej
 $env:OPENAI_API_KEY = $InputKey
-if ($EnvApiBase) {
-    $env:OPENAI_API_BASE = $EnvApiBase
-}
+# Czyścimy stare API Base, bo ustawimy je w Pythonie
+if (Test-Path Env:\OPENAI_API_BASE) { Remove-Item Env:\OPENAI_API_BASE -ErrorAction SilentlyContinue }
 
 # --- 3. ZAPIS STARTERA ---
 $CurrentScriptBlock = $MyInvocation.MyCommand.ScriptBlock
@@ -127,21 +112,57 @@ Write-Host "Weryfikacja bibliotek..." -ForegroundColor Yellow
 & "$PyCmd" -m pip install --upgrade pip setuptools wheel --no-warn-script-location --quiet
 & "$PyCmd" -m pip install open-interpreter --no-warn-script-location --quiet
 
-# --- 6. PLIK STARTOWY (DIRECT PYTHON) ---
+# --- 6. PLIK STARTOWY (PYTHON CONFIGURATION & SPOOFING) ---
 $PythonLaunchCode = @"
 import sys
 import os
+import time
 
-# Wymuszenie UTF-8
+# Wymuszenie UTF-8 w konsoli Windows
 sys.stdout.reconfigure(encoding='utf-8')
 
 def start():
-    print(f"Uruchamianie loadera...")
+    print(f"Uruchamianie Open Interpreter...")
+    
     try:
-        # Importujemy bibliotekę
-        from interpreter.terminal_interface.start_terminal_interface import main
-        # Uruchamiamy
-        main()
+        # Importujemy interpreter
+        from interpreter import interpreter
+        
+        # Pobieramy konfiguracje ze zmiennych srodowiskowych
+        use_openrouter = os.environ.get("OI_USE_OPENROUTER", "false") == "true"
+        real_model = os.environ.get("OI_REAL_MODEL", "gpt-4o")
+        
+        if use_openrouter:
+            print(f"--- TRYB OPENROUTER (SPOOFING) ---")
+            print(f"Cel: {real_model}")
+            
+            # 1. Ustawiamy API Base na OpenRouter
+            interpreter.llm.api_base = "https://openrouter.ai/api/v1"
+            
+            # 2. MANEWR PODMIANY:
+            # Mowimy interpreterowi, ze to 'gpt-4o'. Dzieki temu uzyje protokolu OpenAI 
+            # i nie bedzie szukal kluczy Anthropic/Google.
+            interpreter.llm.model = "gpt-4o"
+            
+            # 3. Wstrzykujemy prawdziwa nazwe modelu w cialo zapytania HTTP.
+            # To nadpisuje 'gpt-4o' w ostatniej chwili.
+            interpreter.llm.extra_body = { "model": real_model }
+            
+            # Ustawienia kontekstu dla nowoczesnych modeli
+            interpreter.llm.context_window = 128000
+            interpreter.llm.max_tokens = 8192
+            
+        else:
+            print(f"--- TRYB OPENAI ---")
+            interpreter.llm.model = real_model
+        
+        # Wspolne ustawienia
+        interpreter.auto_run = True
+        interpreter.system_message = "Jesteś ekspertem IT. Wykonujesz polecenia w systemie Windows. Odpowiadaj zwięźle i po polsku."
+        
+        # Start czatu
+        interpreter.chat()
+        
     except Exception as e:
         print(f"\nCRITICAL ERROR: {e}")
         import traceback
@@ -154,23 +175,18 @@ if __name__ == "__main__":
 
 Set-Content -Path $PyStartFile -Value $PythonLaunchCode
 
-Write-Host "--- START: $TargetModel ---" -ForegroundColor Green
-if ($EnvApiBase) { Write-Host "Endpoint: $EnvApiBase" -ForegroundColor Gray }
+Write-Host "--- START ---" -ForegroundColor Green
 
 try {
-    # Przekazujemy CZYSTĄ nazwę modelu. 
-    # Ponieważ ustawiliśmy OPENAI_API_BASE, interpreter wyśle to do OpenRoutera.
-    & "$PyCmd" "$PyStartFile" `
-        --model $TargetModel `
-        --context_window 128000 `
-        --max_tokens 8192 `
-        -y `
-        --system_message "Jesteś ekspertem IT. Wykonujesz polecenia w systemie Windows. Odpowiadaj zwięźle i po polsku."
+    # Uruchamiamy skrypt Pythona
+    & "$PyCmd" "$PyStartFile"
 } catch {
     Write-Error "Błąd uruchomienia: $_"
 } finally {
+    # Czyszczenie
     $env:OPENAI_API_KEY = $null
-    $env:OPENAI_API_BASE = $null
+    $env:OI_USE_OPENROUTER = $null
+    $env:OI_REAL_MODEL = $null
     $InputKey = $null
     Write-Host "`n[SECURE] Wyczyszczono klucze z pamięci." -ForegroundColor DarkGray
 }
