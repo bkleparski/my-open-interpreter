@@ -100,4 +100,58 @@ try {
         "def start():",
         "    try:",
         "        from interpreter import interpreter",
-        "        use_openrouter = os.environ.get('OI_USE_OPENROUTER',
+        "        use_openrouter = os.environ.get('OI_USE_OPENROUTER', 'false') == 'true'",
+        "        model = os.environ.get('OI_MODEL', 'gpt-4o')",
+        "        api_key = os.environ.get('OI_API_KEY', '')",
+        "        interpreter.llm.api_key = api_key",
+        "        interpreter.llm.model = model",
+        "",
+        "        print(f'\n--- STARTUJEMY ---')",
+        "        print(f'Model: {model}')",
+        "        print(f'Wpisz exit aby zakończyć i usunąć pliki.\n')",
+        "",
+        "        if use_openrouter:",
+        "            interpreter.llm.api_base = 'https://openrouter.ai/api/v1'",
+        "            interpreter.llm.custom_llm_provider = 'openai'",
+        "            interpreter.llm.context_window = 128000",
+        "            interpreter.llm.max_tokens = 4096",
+        "",
+        "        interpreter.auto_run = True",
+        "        interpreter.system_message = 'Jesteś ekspertem IT. Wykonujesz polecenia w systemie Windows. Odpowiadaj zwięźle i po polsku.'",
+        "        interpreter.chat()",
+        "    except Exception as e:",
+        "        print(f'\nCRITICAL ERROR: {e}')",
+        "",
+        "if __name__ == '__main__':",
+        "    start()"
+    )
+    
+    Set-Content -Path $PyStartFile -Value ($PyCodeLines -join [Environment]::NewLine)
+
+    # E. URUCHOMIENIE
+    $PythonVenv = "$VenvPath\Scripts\python.exe"
+    & $PythonVenv $PyStartFile
+
+} catch {
+    Write-Error "Wystąpił błąd: $_"
+} finally {
+    # --- SEKCJ A CZYSZCZENIA (AUTO-DESTRUCT) ---
+    Write-Host "`n--- ZAMYKANIE SESJI ---" -ForegroundColor Cyan
+    Write-Host "Usuwanie kluczy z pamięci..." -ForegroundColor Gray
+    $env:OI_API_KEY = $null
+    $InputKey = $null
+    
+    Write-Host "Usuwanie plików z dysku (Auto-Destruct)..." -ForegroundColor Gray
+    
+    # Krótka pauza, aby procesy zwolniły pliki
+    Start-Sleep -Seconds 2
+    
+    try {
+        if (Test-Path $BasePath) {
+            Remove-Item $BasePath -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "Katalog roboczy usunięty." -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "Ostrzeżenie: Niektóre pliki mogą być jeszcze w użyciu." -ForegroundColor Yellow
+    }
+}
