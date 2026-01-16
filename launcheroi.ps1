@@ -14,7 +14,7 @@ if (-not (Test-Path $BasePath)) { New-Item -ItemType Directory -Force -Path $Bas
 
 # --- 2. TRYB "RAM ONLY" (INCOGNITO) ---
 Clear-Host
-Write-Host "--- OPEN INTERPRETER (2026 EDITION) ---" -ForegroundColor Cyan
+Write-Host "--- OPEN INTERPRETER (2026 SSL FIX) ---" -ForegroundColor Cyan
 Write-Host "Tryb incognito: Klucze tylko w RAM." -ForegroundColor Gray
 Write-Host "------------------------------------------------" -ForegroundColor DarkGray
 
@@ -24,21 +24,28 @@ Write-Host "[2] OpenRouter" -ForegroundColor White
 
 $ProvSel = Read-Host "Wybór"
 
-# Zmienne przekazywane do Pythona
-$env:OI_USE_OPENROUTER = "false"
+# Zmienne logiczne
+$UseOpenRouter = $false
+$TargetModel = ""
 
 if ($ProvSel -eq "2") {
-    $env:OI_USE_OPENROUTER = "true"
+    $UseOpenRouter = $true
     Write-Host "Podaj model (slug z OpenRouter):" -ForegroundColor Yellow
     Write-Host "Np: 'anthropic/claude-3.5-sonnet'" -ForegroundColor DarkGray
     $RawModel = Read-Host "Model"
     if ([string]::IsNullOrWhiteSpace($RawModel)) { $RawModel = "anthropic/claude-3.5-sonnet" }
-    $env:OI_MODEL = $RawModel
+    
+    # NATIVE LITELLM: Dodajemy 'openrouter/' żeby silnik wiedział co robić
+    if ($RawModel -match "^openrouter/") {
+        $TargetModel = $RawModel
+    } else {
+        $TargetModel = "openrouter/$RawModel"
+    }
 } else {
     Write-Host "Podaj model (np. 'gpt-4o'):" -ForegroundColor Yellow
     $RawModel = Read-Host "Model"
     if ([string]::IsNullOrWhiteSpace($RawModel)) { $RawModel = "gpt-4o" }
-    $env:OI_MODEL = $RawModel
+    $TargetModel = $RawModel
 }
 
 Write-Host "Wklej klucz API (Będzie widoczny jako *****):" -ForegroundColor Yellow
@@ -51,10 +58,21 @@ try {
 
 if ([string]::IsNullOrWhiteSpace($InputKey)) { Write-Error "Brak klucza."; exit }
 
-$env:OI_API_KEY = $InputKey
-# Czyścimy standardowe zmienne, żeby nie myliły Pythona
-Remove-Item Env:\OPENAI_API_KEY -ErrorAction SilentlyContinue
+# --- CZYSTE ZMIENNE ŚRODOWISKOWE ---
+# Usuwamy wszystko co może bruździć
 Remove-Item Env:\OPENAI_API_BASE -ErrorAction SilentlyContinue
+Remove-Item Env:\OPENAI_API_KEY -ErrorAction SilentlyContinue
+Remove-Item Env:\OPENROUTER_API_KEY -ErrorAction SilentlyContinue
+Remove-Item Env:\ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+
+if ($UseOpenRouter) {
+    # Dla OpenRouter ustawiamy DEDYKOWANĄ zmienną.
+    # Nie ustawiamy OPENAI_API_KEY, żeby nie mylić silnika.
+    $env:OPENROUTER_API_KEY = $InputKey
+} else {
+    # Dla OpenAI standard
+    $env:OPENAI_API_KEY = $InputKey
+}
 
 # --- 3. ZAPIS STARTERA ---
 $CurrentScriptBlock = $MyInvocation.MyCommand.ScriptBlock
@@ -64,7 +82,7 @@ if (-not (Test-Path $LauncherFile) -and $CurrentScriptBlock) {
 
 Write-Host "`n--- Inicjowanie środowiska (Metoda Portable ZIP) ---" -ForegroundColor Cyan
 
-# --- 4. INSTALACJA PYTHON (METODA ZIP) ---
+# --- 4. INSTALACJA PYTHON I SSL FIX ---
 function Ensure-LocalPythonZIP {
     if (Test-Path $LocalPythonExe) { return $LocalPythonExe }
     
@@ -104,56 +122,42 @@ function Ensure-LocalPythonZIP {
 
 $PyCmd = Ensure-LocalPythonZIP
 
-# --- 5. INSTALACJA OPEN INTERPRETER ---
-Write-Host "Weryfikacja bibliotek..." -ForegroundColor Yellow
-& "$PyCmd" -m pip install --upgrade pip setuptools wheel --no-warn-script-location --quiet
+# --- 5. INSTALACJA PAKIETÓW + CERTIFI (SSL FIX) ---
+Write-Host "Instalacja bibliotek i certyfikatów SSL..." -ForegroundColor Yellow
+# Instalujemy certifi aby naprawić błąd 520/SSL
+& "$PyCmd" -m pip install --upgrade pip setuptools wheel certifi --no-warn-script-location --quiet
 & "$PyCmd" -m pip install open-interpreter --no-warn-script-location --quiet
 
-# --- 6. PLIK STARTOWY (PROVIDER OVERRIDE) ---
+# --- 6. PLIK STARTOWY (CERTS + NATIVE RUN) ---
 $PythonLaunchCode = @"
 import sys
 import os
+import certifi
+
+# SSL FIX: Wskazujemy Pythonowi gdzie są certyfikaty
+os.environ['SSL_CERT_FILE'] = certifi.where()
 
 sys.stdout.reconfigure(encoding='utf-8')
 
 def start():
     print(f"Uruchamianie Open Interpreter...")
+    print(f"Certyfikaty SSL: {certifi.where()}")
     
     try:
         from interpreter import interpreter
         
-        # Pobieramy dane z ENV
-        use_openrouter = os.environ.get("OI_USE_OPENROUTER", "false") == "true"
-        target_model = os.environ.get("OI_MODEL", "gpt-4o")
-        api_key = os.environ.get("OI_API_KEY", "")
-        
-        # Konfiguracja bazowa
-        interpreter.llm.api_key = api_key
-        interpreter.llm.model = target_model
-        
-        if use_openrouter:
-            print(f"--- TRYB OPENROUTER (Provider Override) ---")
-            print(f"Model: {target_model}")
-            
-            # Adres OpenRouter
-            interpreter.llm.api_base = "https://openrouter.ai/api/v1"
-            
-            # KLUCZOWY FIX:
-            # Wymuszamy, aby silnik uzywal 'openai' jako dostawcy, 
-            # niezaleznie od nazwy modelu (nawet jak ma 'anthropic' w nazwie).
-            # To eliminuje blad 'Missing Anthropic API Key' oraz blad 400.
-            interpreter.llm.custom_llm_provider = "openai"
-            
-            # Parametry bezpieczenstwa
-            interpreter.llm.context_window = 128000
-            interpreter.llm.max_tokens = 4096 
-        else:
-            print(f"--- TRYB OPENAI ---")
-            # Dla zwyklego OpenAI nic nie wymuszamy, auto-detekcja dziala
+        # Odbieramy argumenty z CLI (przekazane przez PowerShella)
+        # Nie ustawiamy tu nic recznie, polegamy na Zmiennych Srodowiskowych
+        # i natywnej obsludze 'openrouter/' przez LiteLLM.
         
         interpreter.auto_run = True
         interpreter.system_message = "Jesteś ekspertem IT. Wykonujesz polecenia w systemie Windows. Odpowiadaj zwięźle i po polsku."
         
+        # Konfiguracja bezpieczenstwa
+        interpreter.llm.context_window = 128000
+        interpreter.llm.max_tokens = 4096
+        
+        # Start
         interpreter.chat()
         
     except Exception as e:
@@ -168,14 +172,28 @@ if __name__ == "__main__":
 
 Set-Content -Path $PyStartFile -Value $PythonLaunchCode
 
-Write-Host "--- START ---" -ForegroundColor Green
+Write-Host "--- START: $TargetModel ---" -ForegroundColor Green
 
 try {
-    & "$PyCmd" "$PyStartFile"
+    # Przekazujemy model jako argument CLI do interpretera wewnątrz Pythona
+    # To najbezpieczniejsza metoda.
+    
+    # Budujemy komendę:
+    # python.exe start_oi.py --model nazwa_modelu
+    
+    $StartArgs = @(
+        "$PyStartFile",
+        "--model", "$TargetModel",
+        "-y"
+    )
+    
+    & "$PyCmd" $StartArgs
+    
 } catch {
     Write-Error "Błąd uruchomienia: $_"
 } finally {
-    $env:OI_API_KEY = $null
+    $env:OPENAI_API_KEY = $null
+    $env:OPENROUTER_API_KEY = $null
     $InputKey = $null
     Write-Host "`n[SECURE] Wyczyszczono klucze z pamięci." -ForegroundColor DarkGray
 }
