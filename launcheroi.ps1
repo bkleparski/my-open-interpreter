@@ -24,24 +24,21 @@ Write-Host "[2] OpenRouter" -ForegroundColor White
 
 $ProvSel = Read-Host "Wybór"
 
-# Zmienne przekazywane do Pythona przez ENV
+# Zmienne przekazywane do Pythona
 $env:OI_USE_OPENROUTER = "false"
-$env:OI_REAL_MODEL = ""
 
 if ($ProvSel -eq "2") {
-    # OPENROUTER
     $env:OI_USE_OPENROUTER = "true"
     Write-Host "Podaj model (slug z OpenRouter):" -ForegroundColor Yellow
-    Write-Host "Np: 'anthropic/claude-3.5-sonnet' (Zalecany)" -ForegroundColor DarkGray
+    Write-Host "Np: 'anthropic/claude-3.5-sonnet'" -ForegroundColor DarkGray
     $RawModel = Read-Host "Model"
     if ([string]::IsNullOrWhiteSpace($RawModel)) { $RawModel = "anthropic/claude-3.5-sonnet" }
-    $env:OI_REAL_MODEL = $RawModel
+    $env:OI_MODEL = $RawModel
 } else {
-    # OPENAI
     Write-Host "Podaj model (np. 'gpt-4o'):" -ForegroundColor Yellow
     $RawModel = Read-Host "Model"
     if ([string]::IsNullOrWhiteSpace($RawModel)) { $RawModel = "gpt-4o" }
-    $env:OI_REAL_MODEL = $RawModel
+    $env:OI_MODEL = $RawModel
 }
 
 Write-Host "Wklej klucz API (Będzie widoczny jako *****):" -ForegroundColor Yellow
@@ -54,10 +51,10 @@ try {
 
 if ([string]::IsNullOrWhiteSpace($InputKey)) { Write-Error "Brak klucza."; exit }
 
-# Ustawiamy klucz w zmiennej środowiskowej
-$env:OPENAI_API_KEY = $InputKey
-# Czyścimy stare API Base, bo ustawimy je w Pythonie
-if (Test-Path Env:\OPENAI_API_BASE) { Remove-Item Env:\OPENAI_API_BASE -ErrorAction SilentlyContinue }
+$env:OI_API_KEY = $InputKey
+# Czyścimy standardowe zmienne, żeby nie myliły Pythona
+Remove-Item Env:\OPENAI_API_KEY -ErrorAction SilentlyContinue
+Remove-Item Env:\OPENAI_API_BASE -ErrorAction SilentlyContinue
 
 # --- 3. ZAPIS STARTERA ---
 $CurrentScriptBlock = $MyInvocation.MyCommand.ScriptBlock
@@ -112,55 +109,51 @@ Write-Host "Weryfikacja bibliotek..." -ForegroundColor Yellow
 & "$PyCmd" -m pip install --upgrade pip setuptools wheel --no-warn-script-location --quiet
 & "$PyCmd" -m pip install open-interpreter --no-warn-script-location --quiet
 
-# --- 6. PLIK STARTOWY (PYTHON CONFIGURATION & SPOOFING) ---
+# --- 6. PLIK STARTOWY (PROVIDER OVERRIDE) ---
 $PythonLaunchCode = @"
 import sys
 import os
-import time
 
-# Wymuszenie UTF-8 w konsoli Windows
 sys.stdout.reconfigure(encoding='utf-8')
 
 def start():
     print(f"Uruchamianie Open Interpreter...")
     
     try:
-        # Importujemy interpreter
         from interpreter import interpreter
         
-        # Pobieramy konfiguracje ze zmiennych srodowiskowych
+        # Pobieramy dane z ENV
         use_openrouter = os.environ.get("OI_USE_OPENROUTER", "false") == "true"
-        real_model = os.environ.get("OI_REAL_MODEL", "gpt-4o")
+        target_model = os.environ.get("OI_MODEL", "gpt-4o")
+        api_key = os.environ.get("OI_API_KEY", "")
+        
+        # Konfiguracja bazowa
+        interpreter.llm.api_key = api_key
+        interpreter.llm.model = target_model
         
         if use_openrouter:
-            print(f"--- TRYB OPENROUTER (SPOOFING) ---")
-            print(f"Cel: {real_model}")
+            print(f"--- TRYB OPENROUTER (Provider Override) ---")
+            print(f"Model: {target_model}")
             
-            # 1. Ustawiamy API Base na OpenRouter
+            # Adres OpenRouter
             interpreter.llm.api_base = "https://openrouter.ai/api/v1"
             
-            # 2. MANEWR PODMIANY:
-            # Mowimy interpreterowi, ze to 'gpt-4o'. Dzieki temu uzyje protokolu OpenAI 
-            # i nie bedzie szukal kluczy Anthropic/Google.
-            interpreter.llm.model = "gpt-4o"
+            # KLUCZOWY FIX:
+            # Wymuszamy, aby silnik uzywal 'openai' jako dostawcy, 
+            # niezaleznie od nazwy modelu (nawet jak ma 'anthropic' w nazwie).
+            # To eliminuje blad 'Missing Anthropic API Key' oraz blad 400.
+            interpreter.llm.custom_llm_provider = "openai"
             
-            # 3. Wstrzykujemy prawdziwa nazwe modelu w cialo zapytania HTTP.
-            # To nadpisuje 'gpt-4o' w ostatniej chwili.
-            interpreter.llm.extra_body = { "model": real_model }
-            
-            # Ustawienia kontekstu dla nowoczesnych modeli
+            # Parametry bezpieczenstwa
             interpreter.llm.context_window = 128000
-            interpreter.llm.max_tokens = 8192
-            
+            interpreter.llm.max_tokens = 4096 
         else:
             print(f"--- TRYB OPENAI ---")
-            interpreter.llm.model = real_model
+            # Dla zwyklego OpenAI nic nie wymuszamy, auto-detekcja dziala
         
-        # Wspolne ustawienia
         interpreter.auto_run = True
         interpreter.system_message = "Jesteś ekspertem IT. Wykonujesz polecenia w systemie Windows. Odpowiadaj zwięźle i po polsku."
         
-        # Start czatu
         interpreter.chat()
         
     except Exception as e:
@@ -178,15 +171,11 @@ Set-Content -Path $PyStartFile -Value $PythonLaunchCode
 Write-Host "--- START ---" -ForegroundColor Green
 
 try {
-    # Uruchamiamy skrypt Pythona
     & "$PyCmd" "$PyStartFile"
 } catch {
     Write-Error "Błąd uruchomienia: $_"
 } finally {
-    # Czyszczenie
-    $env:OPENAI_API_KEY = $null
-    $env:OI_USE_OPENROUTER = $null
-    $env:OI_REAL_MODEL = $null
+    $env:OI_API_KEY = $null
     $InputKey = $null
     Write-Host "`n[SECURE] Wyczyszczono klucze z pamięci." -ForegroundColor DarkGray
 }
