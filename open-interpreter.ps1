@@ -44,9 +44,7 @@ $configs = @{
 }
 
 # ============================================================
-# STATYCZNY SKRYPT PYTHON (bez interpolacji PS w kodzie Py)
-# Wszystkie roznicy miedzy providerami obsluguje sam Python
-# przez zmienne srodowiskowe OI_PROVIDER i OI_API_BASE.
+# STATYCZNY SKRYPT PYTHON
 # ============================================================
 $PyLines = @(
     "import os, sys",
@@ -56,7 +54,7 @@ $PyLines = @(
     "    try:",
     "        from interpreter import interpreter",
     "    except ImportError:",
-    "        print('BLAD: open-interpreter nie jest zainstalowany w tym srodowisku.')",
+    "        print('BLAD: open-interpreter nie jest zainstalowany.')",
     "        sys.exit(1)",
     "",
     "    provider = os.environ.get('OI_PROVIDER', '')",
@@ -65,7 +63,7 @@ $PyLines = @(
     "    if provider == 'gemini':",
     "        os.environ['GOOGLE_API_KEY'] = os.environ['OI_API_KEY']",
     "",
-    "    interpreter.llm.model  = os.environ['OI_MODEL']",
+    "    interpreter.llm.model   = os.environ['OI_MODEL']",
     "    interpreter.llm.api_key = os.environ['OI_API_KEY']",
     "",
     "    if api_base:",
@@ -140,6 +138,12 @@ function New-Venv {
     else                    { & $PyCmd -m venv $VenvPath }
 }
 
+function Test-OiInstalled {
+    param($VenvPython)
+    $null = & $VenvPython -c "import interpreter" 2>&1
+    return ($LASTEXITCODE -eq 0)
+}
+
 # ============================================================
 # GLOWNA PETLA
 # ============================================================
@@ -160,10 +164,11 @@ while ($running) {
         continue
     }
 
-    $cfg      = $configs[$choice]
-    $BasePath = "$env:USERPROFILE\.oi\$($cfg.Provider)"
-    $VenvPath = "$BasePath\venv"
-    $PyScript = "$BasePath\run.py"
+    $cfg       = $configs[$choice]
+    $BasePath  = "$env:USERPROFILE\.oi\$($cfg.Provider)"
+    $VenvPath  = "$BasePath\venv"
+    $VenvPy    = "$VenvPath\Scripts\python.exe"
+    $PyScript  = "$BasePath\run.py"
 
     # Naglowek
     Clear-Host
@@ -180,11 +185,18 @@ while ($running) {
         continue
     }
 
-    # Instalacja srodowiska (jednorazowo, venv zostaje)
-    if (-not (Test-Path "$VenvPath\Scripts\python.exe")) {
-        Write-Host "  Pierwsza instalacja — tworzenie srodowiska..." -ForegroundColor Yellow
-        New-Item -ItemType Directory -Force -Path $BasePath | Out-Null
-        New-Venv $PyCmd $VenvPath
+    # Sprawdz czy venv istnieje ORAZ czy open-interpreter jest zainstalowany
+    $venvOk = Test-Path $VenvPy
+    $oiOk   = $venvOk -and (Test-OiInstalled $VenvPy)
+
+    if (-not $venvOk -or -not $oiOk) {
+        if ($venvOk -and -not $oiOk) {
+            Write-Host "  Venv istnieje, ale brak open-interpreter — instalacja pakietow..." -ForegroundColor Yellow
+        } else {
+            Write-Host "  Pierwsza instalacja — tworzenie srodowiska..." -ForegroundColor Yellow
+            New-Item -ItemType Directory -Force -Path $BasePath | Out-Null
+            New-Venv $PyCmd $VenvPath
+        }
 
         if (-not (Test-Path "$VenvPath\Scripts\pip.exe")) {
             Write-Host "  BLAD: Nie udalo sie utworzyc venv." -ForegroundColor Red
@@ -193,7 +205,7 @@ while ($running) {
         }
 
         Write-Host "  Instalacja pakietow..." -ForegroundColor Yellow
-        & "$VenvPath\Scripts\python.exe" -m pip install --upgrade pip setuptools wheel --quiet
+        & $VenvPy -m pip install --upgrade pip setuptools wheel --quiet
         foreach ($pkg in $cfg.Packages) {
             Write-Host "    pip install $pkg" -ForegroundColor DarkGray
             & "$VenvPath\Scripts\pip.exe" install $pkg --quiet
@@ -220,7 +232,7 @@ while ($running) {
         continue
     }
 
-    # Zapisz statyczny skrypt Python
+    # Skrypt Python
     $PyCode = $PyLines -join "`n"
     New-Item -ItemType Directory -Force -Path $BasePath | Out-Null
     Set-Content -Path $PyScript -Value $PyCode -Encoding UTF8
@@ -234,7 +246,7 @@ while ($running) {
         $env:OI_CTX      = $cfg.Ctx.ToString()
         $env:OI_MAX      = $cfg.MaxTok.ToString()
 
-        & "$VenvPath\Scripts\python.exe" $PyScript
+        & $VenvPy $PyScript
     }
     finally {
         $env:OI_API_KEY     = $null
