@@ -182,18 +182,20 @@ while ($running) {
         continue
     }
 
-    # Sprawdz venv i instalacje open-interpreter
+    # Sprawdz venv i instalacje
     $venvOk = Test-Path $VenvPy
     $oiOk   = $venvOk -and (Test-OiInstalled $VenvPy)
 
     if (-not $venvOk -or -not $oiOk) {
         if ($venvOk -and -not $oiOk) {
-            Write-Host "  Brak open-interpreter w venv — instalacja..." -ForegroundColor Yellow
-        } else {
-            Write-Host "  Pierwsza instalacja — tworzenie srodowiska..." -ForegroundColor Yellow
-            New-Item -ItemType Directory -Force -Path $BasePath | Out-Null
-            New-Venv $PyCmd $VenvPath
+            Write-Host "  Brak open-interpreter — reinstalacja..." -ForegroundColor Yellow
+            # Usun stary zepsuty venv
+            Remove-Item $VenvPath -Recurse -Force -ErrorAction SilentlyContinue
         }
+
+        Write-Host "  Tworzenie srodowiska..." -ForegroundColor Yellow
+        New-Item -ItemType Directory -Force -Path $BasePath | Out-Null
+        New-Venv $PyCmd $VenvPath
 
         if (-not (Test-Path "$VenvPath\Scripts\pip.exe")) {
             Write-Host "  BLAD: Nie udalo sie utworzyc venv." -ForegroundColor Red
@@ -201,33 +203,31 @@ while ($running) {
             continue
         }
 
-        # Upgrade pip (bez --quiet zeby widziec bledy)
+        # Upgrade TYLKO pip i wheel — setuptools zostawiamy domyslny z venv
+        # (setuptools 82+ usuwa pkg_resources ktorego wymaga open-interpreter 0.4.x)
         Write-Host "  Aktualizacja pip..." -ForegroundColor DarkGray
-        & $VenvPy -m pip install --upgrade pip setuptools wheel
+        & $VenvPy -m pip install --upgrade pip wheel --quiet
 
-        # Instalacja pakietow (bez --quiet)
+        # Instalacja pakietow
         foreach ($pkg in $cfg.Packages) {
-            Write-Host ""
-            Write-Host "  >>> pip install $pkg" -ForegroundColor Yellow
-            & "$VenvPath\Scripts\pip.exe" install $pkg
+            Write-Host "  Instalacja: $pkg" -ForegroundColor Yellow
+            & "$VenvPath\Scripts\pip.exe" install $pkg --quiet
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "  BLAD: pip install $pkg nie powiodl sie (kod: $LASTEXITCODE)" -ForegroundColor Red
+                Write-Host "  BLAD: pip install $pkg (kod $LASTEXITCODE)" -ForegroundColor Red
                 $null = Read-Host "  Nacisnij Enter aby wrocic"
                 continue
             }
         }
 
         # Weryfikacja
-        Write-Host ""
-        Write-Host "  Weryfikacja instalacji..." -ForegroundColor DarkGray
+        Write-Host "  Weryfikacja..." -ForegroundColor DarkGray
         $verify = & $VenvPy -c "from interpreter import interpreter; print('OK')" 2>&1
         if ($verify -ne "OK") {
-            Write-Host "  UWAGA: Weryfikacja nie powiodla sie:" -ForegroundColor Red
-            Write-Host "  $verify" -ForegroundColor Red
+            Write-Host "  BLAD weryfikacji: $verify" -ForegroundColor Red
             $null = Read-Host "  Nacisnij Enter aby wrocic"
             continue
         }
-        Write-Host "  Instalacja zakonczona i zweryfikowana." -ForegroundColor Green
+        Write-Host "  Gotowe." -ForegroundColor Green
         Write-Host ""
     } else {
         Write-Host "  Srodowisko gotowe (cache)." -ForegroundColor DarkGray
