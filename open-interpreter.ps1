@@ -139,8 +139,8 @@ function New-Venv {
 
 function Test-OiInstalled {
     param($VenvPython)
-    $null = & $VenvPython -c "from interpreter import interpreter" 2>&1
-    return ($LASTEXITCODE -eq 0)
+    $out = & $VenvPython -c "from interpreter import interpreter; print('OK')" 2>&1
+    return ($out -match "OK")
 }
 
 # ============================================================
@@ -201,14 +201,15 @@ while ($running) {
             continue
         }
 
+        $total = 1 + $cfg.Packages.Count + 1
         Write-Host ""
-        Write-Host "  [1/$(1 + $cfg.Packages.Count + 1)] Aktualizacja pip + wheel" -ForegroundColor DarkGray
+        Write-Host "  [1/$total] Aktualizacja pip + wheel" -ForegroundColor DarkGray
         & $VenvPy -m pip install --upgrade pip wheel
 
         $step = 2
         foreach ($pkg in $cfg.Packages) {
             Write-Host ""
-            Write-Host "  [$step/$(1 + $cfg.Packages.Count + 1)] pip install $pkg" -ForegroundColor Yellow
+            Write-Host "  [$step/$total] pip install $pkg" -ForegroundColor Yellow
             & "$VenvPath\Scripts\pip.exe" install $pkg
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  BLAD: pip install $pkg (kod $LASTEXITCODE)" -ForegroundColor Red
@@ -218,16 +219,14 @@ while ($running) {
             $step++
         }
 
-        # Upgrade litellm do najnowszej 1.x — OI 0.4.3 wymaga litellm<2.0
-        # ale nowszy 1.x zna nowe modele (gpt-5.5, deepseek-v4-flash)
         Write-Host ""
-        Write-Host "  [$step/$(1 + $cfg.Packages.Count + 1)] Upgrade litellm (nowe modele)" -ForegroundColor Yellow
+        Write-Host "  [$total/$total] Upgrade litellm (wsparcie nowych modeli)" -ForegroundColor Yellow
         & "$VenvPath\Scripts\pip.exe" install "litellm<2.0" --upgrade
 
         Write-Host ""
         Write-Host "  Weryfikacja importu..." -ForegroundColor DarkGray
-        $verify = & $VenvPy -c "from interpreter import interpreter; print('OK')" 2>&1
-        if ($verify -ne "OK") {
+        $verify = & $VenvPy -c "from interpreter import interpreter; print('OI_OK')" 2>&1
+        if (-not ($verify -match "OI_OK")) {
             Write-Host "  BLAD: $verify" -ForegroundColor Red
             $null = Read-Host "  Nacisnij Enter aby wrocic"
             continue
