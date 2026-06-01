@@ -10,7 +10,9 @@
 $configs = @{
     "1" = @{
         Label    = "DeepSeek V4 Flash"
-        Model    = "deepseek/deepseek-v4-flash"
+        # Uzycie openai-compatible endpoint — DeepSeek API jest zgodne z OpenAI API.
+        # Dzieki temu litellm nie musi znac modelu deepseek-v4-flash z nazwy.
+        Model    = "openai/deepseek-v4-flash"
         ApiBase  = "https://api.deepseek.com/v1"
         ApiUrl   = "https://platform.deepseek.com"
         Provider = "deepseek"
@@ -77,7 +79,7 @@ $PyLines = @(
     "",
     "    print()",
     "    print('  Model    : ' + interpreter.llm.model)",
-    "    print('  Provider : ' + provider)",
+    "    print('  Endpoint : ' + (api_base if api_base else 'domyslny'))",
     "    print('  Wpisz exit aby zakonczyc.')",
     "    print()",
     "    interpreter.chat()",
@@ -202,13 +204,10 @@ while ($running) {
             continue
         }
 
-        # Upgrade pip i wheel (BEZ setuptools — open-interpreter 0.4.x wymaga pkg_resources
-        # ktore jest w setuptools <71, upgrade niszczy kompatybilnosc)
         Write-Host ""
         Write-Host "  [1/$(1 + $cfg.Packages.Count)] Aktualizacja pip + wheel" -ForegroundColor DarkGray
         & $VenvPy -m pip install --upgrade pip wheel
 
-        # Instalacja pakietow — pelny output, bez --quiet
         $step = 2
         foreach ($pkg in $cfg.Packages) {
             Write-Host ""
@@ -216,14 +215,13 @@ while ($running) {
             & "$VenvPath\Scripts\pip.exe" install $pkg
             if ($LASTEXITCODE -ne 0) {
                 Write-Host ""
-                Write-Host "  BLAD: pip install $pkg zwrocil kod $LASTEXITCODE" -ForegroundColor Red
+                Write-Host "  BLAD: pip install $pkg (kod $LASTEXITCODE)" -ForegroundColor Red
                 $null = Read-Host "  Nacisnij Enter aby wrocic"
                 continue
             }
             $step++
         }
 
-        # Weryfikacja
         Write-Host ""
         Write-Host "  Weryfikacja importu..." -ForegroundColor DarkGray
         $verify = & $VenvPy -c "from interpreter import interpreter; print('OK')" 2>&1
