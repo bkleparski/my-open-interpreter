@@ -10,14 +10,14 @@
 $configs = @{
     "1" = @{
         Label    = "DeepSeek V4 Flash"
-        # deepseek/deepseek-chat = alias do V4 Flash (litellm 1.83 zna ten model natywnie)
-        # Bezposrednia nazwa deepseek-v4-flash nie jest jeszcze w litellm 1.83
+        # litellm 1.83 routuje deepseek/deepseek-chat do /beta/chat/completions
+        # Wymuszamy /v1/ przez api_base i wylaczamy tool_calling
         Model    = "deepseek/deepseek-chat"
-        ApiBase  = ""
+        ApiBase  = "https://api.deepseek.com/v1"
         ApiUrl   = "https://platform.deepseek.com"
         Provider = "deepseek"
         Ctx      = 65536
-        MaxTok   = 8192
+        MaxTok   = 4096
         Packages = @("open-interpreter", "litellm")
     }
     "2" = @{
@@ -67,6 +67,10 @@ $PyLines = @(
     "",
     "    if api_base:",
     "        interpreter.llm.api_base = api_base",
+    "",
+    "    # DeepSeek: wymus text LLM (nie tool_calling) bo /beta endpoint nie akceptuje tools",
+    "    if provider == 'deepseek':",
+    "        interpreter.llm.supports_functions = False",
     "",
     "    interpreter.llm.context_window = int(os.environ.get('OI_CTX', '65536'))",
     "    interpreter.llm.max_tokens     = int(os.environ.get('OI_MAX', '4096'))",
