@@ -10,15 +10,13 @@
 $configs = @{
     "1" = @{
         Label    = "DeepSeek V4 Flash"
-        # litellm 1.83 routuje deepseek/deepseek-chat do /beta/chat/completions
-        # Wymuszamy /v1/ przez api_base i wylaczamy tool_calling
         Model    = "deepseek/deepseek-chat"
         ApiBase  = "https://api.deepseek.com/v1"
         ApiUrl   = "https://platform.deepseek.com"
         Provider = "deepseek"
         Ctx      = 65536
         MaxTok   = 4096
-        Packages = @("open-interpreter", "litellm")
+        Packages = @("open-interpreter")
     }
     "2" = @{
         Label    = "OpenAI GPT-5.5"
@@ -38,7 +36,7 @@ $configs = @{
         Provider = "gemini"
         Ctx      = 1000000
         MaxTok   = 65536
-        Packages = @("open-interpreter", "litellm", "google-generativeai")
+        Packages = @("open-interpreter", "google-generativeai")
     }
 }
 
@@ -62,15 +60,12 @@ $PyLines = @(
     "    if provider == 'gemini':",
     "        os.environ['GOOGLE_API_KEY'] = os.environ['OI_API_KEY']",
     "",
-    "    interpreter.llm.model   = os.environ['OI_MODEL']",
-    "    interpreter.llm.api_key = os.environ['OI_API_KEY']",
+    "    interpreter.llm.model              = os.environ['OI_MODEL']",
+    "    interpreter.llm.api_key            = os.environ['OI_API_KEY']",
+    "    interpreter.llm.supports_functions = False",
     "",
     "    if api_base:",
     "        interpreter.llm.api_base = api_base",
-    "",
-    "    # DeepSeek: wymus text LLM (nie tool_calling) bo /beta endpoint nie akceptuje tools",
-    "    if provider == 'deepseek':",
-    "        interpreter.llm.supports_functions = False",
     "",
     "    interpreter.llm.context_window = int(os.environ.get('OI_CTX', '65536'))",
     "    interpreter.llm.max_tokens     = int(os.environ.get('OI_MAX', '4096'))",
@@ -207,13 +202,13 @@ while ($running) {
         }
 
         Write-Host ""
-        Write-Host "  [1/$(1 + $cfg.Packages.Count)] Aktualizacja pip + wheel" -ForegroundColor DarkGray
+        Write-Host "  [1/$(1 + $cfg.Packages.Count + 1)] Aktualizacja pip + wheel" -ForegroundColor DarkGray
         & $VenvPy -m pip install --upgrade pip wheel
 
         $step = 2
         foreach ($pkg in $cfg.Packages) {
             Write-Host ""
-            Write-Host "  [$step/$(1 + $cfg.Packages.Count)] pip install $pkg" -ForegroundColor Yellow
+            Write-Host "  [$step/$(1 + $cfg.Packages.Count + 1)] pip install $pkg" -ForegroundColor Yellow
             & "$VenvPath\Scripts\pip.exe" install $pkg
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  BLAD: pip install $pkg (kod $LASTEXITCODE)" -ForegroundColor Red
@@ -222,6 +217,12 @@ while ($running) {
             }
             $step++
         }
+
+        # Upgrade litellm do najnowszej 1.x — OI 0.4.3 wymaga litellm<2.0
+        # ale nowszy 1.x zna nowe modele (gpt-5.5, deepseek-v4-flash)
+        Write-Host ""
+        Write-Host "  [$step/$(1 + $cfg.Packages.Count + 1)] Upgrade litellm (nowe modele)" -ForegroundColor Yellow
+        & "$VenvPath\Scripts\pip.exe" install "litellm<2.0" --upgrade
 
         Write-Host ""
         Write-Host "  Weryfikacja importu..." -ForegroundColor DarkGray
