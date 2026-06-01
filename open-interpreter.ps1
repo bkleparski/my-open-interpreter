@@ -189,7 +189,6 @@ while ($running) {
     if (-not $venvOk -or -not $oiOk) {
         if ($venvOk -and -not $oiOk) {
             Write-Host "  Brak open-interpreter — reinstalacja..." -ForegroundColor Yellow
-            # Usun stary zepsuty venv
             Remove-Item $VenvPath -Recurse -Force -ErrorAction SilentlyContinue
         }
 
@@ -203,31 +202,37 @@ while ($running) {
             continue
         }
 
-        # Upgrade TYLKO pip i wheel — setuptools zostawiamy domyslny z venv
-        # (setuptools 82+ usuwa pkg_resources ktorego wymaga open-interpreter 0.4.x)
-        Write-Host "  Aktualizacja pip..." -ForegroundColor DarkGray
-        & $VenvPy -m pip install --upgrade pip wheel --quiet
+        # Upgrade pip i wheel (BEZ setuptools — open-interpreter 0.4.x wymaga pkg_resources
+        # ktore jest w setuptools <71, upgrade niszczy kompatybilnosc)
+        Write-Host ""
+        Write-Host "  [1/$(1 + $cfg.Packages.Count)] Aktualizacja pip + wheel" -ForegroundColor DarkGray
+        & $VenvPy -m pip install --upgrade pip wheel
 
-        # Instalacja pakietow
+        # Instalacja pakietow — pelny output, bez --quiet
+        $step = 2
         foreach ($pkg in $cfg.Packages) {
-            Write-Host "  Instalacja: $pkg" -ForegroundColor Yellow
-            & "$VenvPath\Scripts\pip.exe" install $pkg --quiet
+            Write-Host ""
+            Write-Host "  [$step/$(1 + $cfg.Packages.Count)] pip install $pkg" -ForegroundColor Yellow
+            & "$VenvPath\Scripts\pip.exe" install $pkg
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "  BLAD: pip install $pkg (kod $LASTEXITCODE)" -ForegroundColor Red
+                Write-Host ""
+                Write-Host "  BLAD: pip install $pkg zwrocil kod $LASTEXITCODE" -ForegroundColor Red
                 $null = Read-Host "  Nacisnij Enter aby wrocic"
                 continue
             }
+            $step++
         }
 
         # Weryfikacja
-        Write-Host "  Weryfikacja..." -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  Weryfikacja importu..." -ForegroundColor DarkGray
         $verify = & $VenvPy -c "from interpreter import interpreter; print('OK')" 2>&1
         if ($verify -ne "OK") {
-            Write-Host "  BLAD weryfikacji: $verify" -ForegroundColor Red
+            Write-Host "  BLAD: $verify" -ForegroundColor Red
             $null = Read-Host "  Nacisnij Enter aby wrocic"
             continue
         }
-        Write-Host "  Gotowe." -ForegroundColor Green
+        Write-Host "  OK — srodowisko gotowe." -ForegroundColor Green
         Write-Host ""
     } else {
         Write-Host "  Srodowisko gotowe (cache)." -ForegroundColor DarkGray
