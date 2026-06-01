@@ -10,10 +10,10 @@
 $configs = @{
     "1" = @{
         Label    = "DeepSeek V4 Flash"
-        # Uzycie openai-compatible endpoint — DeepSeek API jest zgodne z OpenAI API.
-        # Dzieki temu litellm nie musi znac modelu deepseek-v4-flash z nazwy.
-        Model    = "openai/deepseek-v4-flash"
-        ApiBase  = "https://api.deepseek.com/v1"
+        # deepseek/deepseek-chat = alias do V4 Flash (litellm 1.83 zna ten model natywnie)
+        # Bezposrednia nazwa deepseek-v4-flash nie jest jeszcze w litellm 1.83
+        Model    = "deepseek/deepseek-chat"
+        ApiBase  = ""
         ApiUrl   = "https://platform.deepseek.com"
         Provider = "deepseek"
         Ctx      = 65536
@@ -79,7 +79,8 @@ $PyLines = @(
     "",
     "    print()",
     "    print('  Model    : ' + interpreter.llm.model)",
-    "    print('  Endpoint : ' + (api_base if api_base else 'domyslny'))",
+    "    if api_base:",
+    "        print('  Endpoint : ' + api_base)",
     "    print('  Wpisz exit aby zakonczyc.')",
     "    print()",
     "    interpreter.chat()",
@@ -169,14 +170,12 @@ while ($running) {
     $VenvPy   = "$VenvPath\Scripts\python.exe"
     $PyScript = "$BasePath\run.py"
 
-    # Naglowek
     Clear-Host
     Write-Host ""
     Write-Host "  Open Interpreter · $($cfg.Label)" -ForegroundColor Cyan
     Write-Host "  ────────────────────────────────────────" -ForegroundColor DarkGray
     Write-Host ""
 
-    # Python
     $PyCmd = Get-Python
     if (-not $PyCmd) {
         Write-Host "  BLAD: Nie mozna znalezc ani zainstalowac Python 3.11." -ForegroundColor Red
@@ -184,7 +183,6 @@ while ($running) {
         continue
     }
 
-    # Sprawdz venv i instalacje
     $venvOk = Test-Path $VenvPy
     $oiOk   = $venvOk -and (Test-OiInstalled $VenvPy)
 
@@ -214,7 +212,6 @@ while ($running) {
             Write-Host "  [$step/$(1 + $cfg.Packages.Count)] pip install $pkg" -ForegroundColor Yellow
             & "$VenvPath\Scripts\pip.exe" install $pkg
             if ($LASTEXITCODE -ne 0) {
-                Write-Host ""
                 Write-Host "  BLAD: pip install $pkg (kod $LASTEXITCODE)" -ForegroundColor Red
                 $null = Read-Host "  Nacisnij Enter aby wrocic"
                 continue
@@ -237,7 +234,6 @@ while ($running) {
         Write-Host ""
     }
 
-    # Klucz API
     Write-Host "  Klucz API — $($cfg.Label)" -ForegroundColor White
     Write-Host "  Gdzie zdobyc: $($cfg.ApiUrl)" -ForegroundColor DarkGray
     Write-Host "  Klucz nie bedzie zapisany — tylko w pamieci RAM tej sesji." -ForegroundColor DarkGray
@@ -252,12 +248,10 @@ while ($running) {
         continue
     }
 
-    # Skrypt Python
     $PyCode = $PyLines -join "`n"
     New-Item -ItemType Directory -Force -Path $BasePath | Out-Null
     Set-Content -Path $PyScript -Value $PyCode -Encoding UTF8
 
-    # Uruchomienie
     try {
         $env:OI_MODEL    = $cfg.Model
         $env:OI_API_KEY  = $ApiKey
