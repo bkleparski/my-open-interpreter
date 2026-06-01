@@ -2,9 +2,6 @@
 .SYNOPSIS
     Open Interpreter — Launcher
     irm go.ebartnet.pl/open-interpreter | iex
-.DESCRIPTION
-    Wybor modelu AI, jednorazowa instalacja srodowiska (cache),
-    klucz API tylko w pamieci RAM — nigdy nie trafia na dysk.
 #>
 
 # ============================================================
@@ -53,8 +50,8 @@ $PyLines = @(
     "def main():",
     "    try:",
     "        from interpreter import interpreter",
-    "    except ImportError:",
-    "        print('BLAD: open-interpreter nie jest zainstalowany.')",
+    "    except Exception as e:",
+    "        print('BLAD importu: ' + type(e).__name__ + ': ' + str(e))",
     "        sys.exit(1)",
     "",
     "    provider = os.environ.get('OI_PROVIDER', '')",
@@ -140,7 +137,7 @@ function New-Venv {
 
 function Test-OiInstalled {
     param($VenvPython)
-    $null = & $VenvPython -c "import interpreter" 2>&1
+    $null = & $VenvPython -c "from interpreter import interpreter" 2>&1
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -164,11 +161,11 @@ while ($running) {
         continue
     }
 
-    $cfg       = $configs[$choice]
-    $BasePath  = "$env:USERPROFILE\.oi\$($cfg.Provider)"
-    $VenvPath  = "$BasePath\venv"
-    $VenvPy    = "$VenvPath\Scripts\python.exe"
-    $PyScript  = "$BasePath\run.py"
+    $cfg      = $configs[$choice]
+    $BasePath = "$env:USERPROFILE\.oi\$($cfg.Provider)"
+    $VenvPath = "$BasePath\venv"
+    $VenvPy   = "$VenvPath\Scripts\python.exe"
+    $PyScript = "$BasePath\run.py"
 
     # Naglowek
     Clear-Host
@@ -185,13 +182,13 @@ while ($running) {
         continue
     }
 
-    # Sprawdz czy venv istnieje ORAZ czy open-interpreter jest zainstalowany
+    # Sprawdz venv i instalacje open-interpreter
     $venvOk = Test-Path $VenvPy
     $oiOk   = $venvOk -and (Test-OiInstalled $VenvPy)
 
     if (-not $venvOk -or -not $oiOk) {
         if ($venvOk -and -not $oiOk) {
-            Write-Host "  Venv istnieje, ale brak open-interpreter — instalacja pakietow..." -ForegroundColor Yellow
+            Write-Host "  Brak open-interpreter w venv — instalacja..." -ForegroundColor Yellow
         } else {
             Write-Host "  Pierwsza instalacja — tworzenie srodowiska..." -ForegroundColor Yellow
             New-Item -ItemType Directory -Force -Path $BasePath | Out-Null
@@ -204,13 +201,33 @@ while ($running) {
             continue
         }
 
-        Write-Host "  Instalacja pakietow..." -ForegroundColor Yellow
-        & $VenvPy -m pip install --upgrade pip setuptools wheel --quiet
+        # Upgrade pip (bez --quiet zeby widziec bledy)
+        Write-Host "  Aktualizacja pip..." -ForegroundColor DarkGray
+        & $VenvPy -m pip install --upgrade pip setuptools wheel
+
+        # Instalacja pakietow (bez --quiet)
         foreach ($pkg in $cfg.Packages) {
-            Write-Host "    pip install $pkg" -ForegroundColor DarkGray
-            & "$VenvPath\Scripts\pip.exe" install $pkg --quiet
+            Write-Host ""
+            Write-Host "  >>> pip install $pkg" -ForegroundColor Yellow
+            & "$VenvPath\Scripts\pip.exe" install $pkg
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  BLAD: pip install $pkg nie powiodl sie (kod: $LASTEXITCODE)" -ForegroundColor Red
+                $null = Read-Host "  Nacisnij Enter aby wrocic"
+                continue
+            }
         }
-        Write-Host "  Instalacja zakonczona." -ForegroundColor Green
+
+        # Weryfikacja
+        Write-Host ""
+        Write-Host "  Weryfikacja instalacji..." -ForegroundColor DarkGray
+        $verify = & $VenvPy -c "from interpreter import interpreter; print('OK')" 2>&1
+        if ($verify -ne "OK") {
+            Write-Host "  UWAGA: Weryfikacja nie powiodla sie:" -ForegroundColor Red
+            Write-Host "  $verify" -ForegroundColor Red
+            $null = Read-Host "  Nacisnij Enter aby wrocic"
+            continue
+        }
+        Write-Host "  Instalacja zakonczona i zweryfikowana." -ForegroundColor Green
         Write-Host ""
     } else {
         Write-Host "  Srodowisko gotowe (cache)." -ForegroundColor DarkGray
