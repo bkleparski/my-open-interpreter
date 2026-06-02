@@ -1,6 +1,7 @@
+#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Open Interpreter — Launcher
+    Open Interpreter - Launcher
     irm go.ebartnet.pl/open-interpreter | iex
 #>
 
@@ -10,8 +11,10 @@
 $configs = @{
     "1" = @{
         Label    = "DeepSeek V4 Flash"
-        Model    = "deepseek/deepseek-chat"
-        ApiBase  = "https://api.deepseek.com/v1"
+        # openai/ prefix = litellm uzywa OpenAI client (bez DeepSeek-specific params)
+        # OPENAI_API_BASE ustawiony w env zmusza klienta na wlasciwy endpoint
+        Model    = "openai/deepseek-chat"
+        ApiBase  = "https://api.deepseek.com"
         ApiUrl   = "https://platform.deepseek.com"
         Provider = "deepseek"
         Ctx      = 65536
@@ -57,15 +60,17 @@ $PyLines = @(
     "    provider = os.environ.get('OI_PROVIDER', '')",
     "    api_base = os.environ.get('OI_API_BASE', '')",
     "",
+    "    # Gemini wymaga GOOGLE_API_KEY",
     "    if provider == 'gemini':",
     "        os.environ['GOOGLE_API_KEY'] = os.environ['OI_API_KEY']",
+    "",
+    "    # DeepSeek: ustaw OPENAI_API_BASE zeby litellm uzyl wlasciwego endpointu",
+    "    if provider == 'deepseek' and api_base:",
+    "        os.environ['OPENAI_API_BASE'] = api_base",
     "",
     "    interpreter.llm.model              = os.environ['OI_MODEL']",
     "    interpreter.llm.api_key            = os.environ['OI_API_KEY']",
     "    interpreter.llm.supports_functions = False",
-    "",
-    "    if api_base:",
-    "        interpreter.llm.api_base = api_base",
     "",
     "    interpreter.llm.context_window = int(os.environ.get('OI_CTX', '65536'))",
     "    interpreter.llm.max_tokens     = int(os.environ.get('OI_MAX', '4096'))",
@@ -94,10 +99,10 @@ $PyLines = @(
 function Show-Menu {
     Clear-Host
     Write-Host ""
-    Write-Host "  ╔═════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "  ║        Open Interpreter — Launcher           ║" -ForegroundColor Cyan
-    Write-Host "  ║   github.com/bkleparski/my-open-interpreter  ║" -ForegroundColor DarkGray
-    Write-Host "  ╚═════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "  ============================================" -ForegroundColor Cyan
+    Write-Host "       Open Interpreter -- Launcher           " -ForegroundColor Cyan
+    Write-Host "   github.com/bkleparski/my-open-interpreter  " -ForegroundColor DarkGray
+    Write-Host "  ============================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  Wybierz model AI:" -ForegroundColor White
     Write-Host ""
@@ -139,8 +144,8 @@ function New-Venv {
 
 function Test-OiInstalled {
     param($VenvPython)
-    $out = & $VenvPython -c "from interpreter import interpreter; print('OK')" 2>&1
-    return ($out -match "OK")
+    $out = & $VenvPython -c "from interpreter import interpreter; print('OI_OK')" 2>&1
+    return ($out -match "OI_OK")
 }
 
 # ============================================================
@@ -171,8 +176,8 @@ while ($running) {
 
     Clear-Host
     Write-Host ""
-    Write-Host "  Open Interpreter · $($cfg.Label)" -ForegroundColor Cyan
-    Write-Host "  ────────────────────────────────────────" -ForegroundColor DarkGray
+    Write-Host "  Open Interpreter -- $($cfg.Label)" -ForegroundColor Cyan
+    Write-Host "  ------------------------------------------" -ForegroundColor DarkGray
     Write-Host ""
 
     $PyCmd = Get-Python
@@ -187,7 +192,7 @@ while ($running) {
 
     if (-not $venvOk -or -not $oiOk) {
         if ($venvOk -and -not $oiOk) {
-            Write-Host "  Brak open-interpreter — reinstalacja..." -ForegroundColor Yellow
+            Write-Host "  Brak open-interpreter -- reinstalacja..." -ForegroundColor Yellow
             Remove-Item $VenvPath -Recurse -Force -ErrorAction SilentlyContinue
         }
 
@@ -220,7 +225,7 @@ while ($running) {
         }
 
         Write-Host ""
-        Write-Host "  [$total/$total] Upgrade litellm (wsparcie nowych modeli)" -ForegroundColor Yellow
+        Write-Host "  [$total/$total] Upgrade litellm (nowe modele)" -ForegroundColor Yellow
         & "$VenvPath\Scripts\pip.exe" install "litellm<2.0" --upgrade
 
         Write-Host ""
@@ -231,16 +236,16 @@ while ($running) {
             $null = Read-Host "  Nacisnij Enter aby wrocic"
             continue
         }
-        Write-Host "  OK — srodowisko gotowe." -ForegroundColor Green
+        Write-Host "  OK -- srodowisko gotowe." -ForegroundColor Green
         Write-Host ""
     } else {
         Write-Host "  Srodowisko gotowe (cache)." -ForegroundColor DarkGray
         Write-Host ""
     }
 
-    Write-Host "  Klucz API — $($cfg.Label)" -ForegroundColor White
+    Write-Host "  Klucz API -- $($cfg.Label)" -ForegroundColor White
     Write-Host "  Gdzie zdobyc: $($cfg.ApiUrl)" -ForegroundColor DarkGray
-    Write-Host "  Klucz nie bedzie zapisany — tylko w pamieci RAM tej sesji." -ForegroundColor DarkGray
+    Write-Host "  Klucz nie bedzie zapisany -- tylko w pamieci RAM tej sesji." -ForegroundColor DarkGray
     Write-Host ""
     $SecureKey = Read-Host "  Klucz API" -AsSecureString
     $ApiKey    = [System.Net.NetworkCredential]::new("", $SecureKey).Password
@@ -264,14 +269,22 @@ while ($running) {
         $env:OI_CTX      = $cfg.Ctx.ToString()
         $env:OI_MAX      = $cfg.MaxTok.ToString()
 
+        # Dla DeepSeek: ustaw OPENAI_API_KEY zeby openai client go uzywal
+        if ($cfg.Provider -eq "deepseek") {
+            $env:OPENAI_API_KEY  = $ApiKey
+            $env:OPENAI_API_BASE = $cfg.ApiBase
+        }
+
         & $VenvPy $PyScript
     }
     finally {
-        $env:OI_API_KEY     = $null
-        $env:OI_API_BASE    = $null
-        $env:OI_PROVIDER    = $null
-        $env:GOOGLE_API_KEY = $null
-        $ApiKey             = $null
+        $env:OI_API_KEY      = $null
+        $env:OI_API_BASE     = $null
+        $env:OI_PROVIDER     = $null
+        $env:OPENAI_API_KEY  = $null
+        $env:OPENAI_API_BASE = $null
+        $env:GOOGLE_API_KEY  = $null
+        $ApiKey              = $null
         Remove-Item $PyScript -ErrorAction SilentlyContinue
         Write-Host "`n  Klucz API usunieto z pamieci sesji." -ForegroundColor DarkGray
         $null = Read-Host "  Nacisnij Enter aby wrocic do menu"
